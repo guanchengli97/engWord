@@ -1,10 +1,14 @@
 # 拾词 · Word Garden
 
-一个面向美国通用职场和日常生活的英语学习页面。使用原生 HTML、CSS、JavaScript，无需安装依赖或构建。
+一个面向美国通用职场和日常生活的英语学习页面。使用原生 HTML、CSS、JavaScript，本地学习无需安装依赖或构建；Docker 部署需要 Docker Compose，本地后端开发需要 Node.js 和 npm。
+
+## 云端多设备同步
+
+已提供 Docker Compose（Node.js 前后端 + PostgreSQL），公网登录保护由 Cloudflare Access 控制台配置。Docker 应用不验证登录，使用单一共享学习档案。部署与迁移步骤见 [DEPLOY.md](DEPLOY.md)。未配置云端时，仍可直接打开 `index.html` 本地学习。
 
 ## 打开方式
 
-保持 `index.html`、`app.js`、`map-layout.js`、`style.css` 与 `data/` 的目录结构，直接用浏览器打开 `index.html`，或在项目目录启动本地服务器：
+保持 `index.html`、`app.js`、`map-layout.js`、`sync.js`、`style.css` 与 `data/` 的目录结构，直接用浏览器打开 `index.html`，或在项目目录启动本地服务器：
 
 ```sh
 python3 -m http.server 5173
@@ -52,7 +56,7 @@ python3 -m http.server 5173
 
 ECDICT 音标以英式为主，详情中已注明。发音通过 Web Speech API 优先调用设备的 `en-US` 语音；若没有美式语音，会回退到可用英语语音。未内置录音文件，实际发音可用性取决于浏览器与系统。没有例句的词典条目明确显示「此词暂未收录例句」。
 
-字体使用 Google Fonts，离线时回退到系统字体；词库已随项目保存，无需联网查询。数据仅保存在当前浏览器，不上传、不跨设备同步；清除浏览器数据会删除自定义词和进度。直接打开文件和使用本地服务器属于不同存储环境，建议固定一种打开方式。
+字体使用 Google Fonts，离线时回退到系统字体；词库已随项目保存，无需联网查询。本地模式的数据保存在当前浏览器；配置云端后可同步已会状态、自定义词和小卡片点击方式。清除浏览器数据会删除尚未同步的记录。直接打开文件和使用本地服务器属于不同存储环境，建议固定一种打开方式。
 
 ## 维护与验证
 

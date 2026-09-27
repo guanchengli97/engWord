@@ -173,7 +173,7 @@ function speak(word) {
   utterance.onerror = e => { if (!['interrupted','canceled'].includes(e.error)) toast('发音暂时不可用，请检查设备是否安装英语语音'); };
   speechSynthesis.speak(utterance);
 }
-function toggle(id, restoreFocus = true) { if (known.has(id)) known.delete(id); else known.add(id); persist(); render(); const replacement = [...document.querySelectorAll('[data-toggle]')].find(b => b.dataset.toggle === id); if (restoreFocus) replacement?.focus({preventScroll:true}); }
+function toggle(id, restoreFocus = true) { if (known.has(id)) known.delete(id); else known.add(id); persist(); cloudSync.queue(`known:${id}`,known.has(id)); render(); const replacement = [...document.querySelectorAll('[data-toggle]')].find(b => b.dataset.toggle === id); if (restoreFocus) replacement?.focus({preventScroll:true}); }
 function handleWordClick(e) {
   if (e.currentTarget.id === 'word-grid' && performance.now() < suppressMapClickUntil) return;
   const sound = e.target.closest('[data-speak]'), status = e.target.closest('[data-toggle]');
@@ -196,7 +196,7 @@ function activateSmallCard(id) {
 }
 $('#small-card-action').value = smallCardAction;
 $('#small-card-action').addEventListener('change', e => {
-  smallCardAction = e.target.value; persist(); applyZoom();
+  smallCardAction = e.target.value; persist(); cloudSync.queue('setting:smallCardAction',smallCardAction); applyZoom();
 });
 function renderDetail(id) {
   const w=wordById.get(id);
@@ -614,7 +614,7 @@ $('#word-form').addEventListener('submit', e => {
   if (!data.word || !data.meaning) {toast('请填写单词和中文释义'); return;}
   if (words.some(w => w.word.toLowerCase() === data.word.toLowerCase())) {toast('这颗单词种子已经在花园里了'); return;}
   const w={...data,id:`custom-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,level:'custom',slot:Math.max(...words.map(w=>w.slot))+1};
-  custom.push(w);words.push(w);wordById.set(w.id,w);mapLayout.add(w,words);category=filter=studyLevel='all';query='';$('#search').value='';render();zoom=Math.max(.7,zoom);applyZoom();centerWord(w);persist();e.target.reset();$('#add-dialog').close();toast(`「${w.word}」已经种进你的花园`);
+  custom.push(w);cloudSync.queue(`custom:${w.id}`,w);words.push(w);wordById.set(w.id,w);mapLayout.add(w,words);category=filter=studyLevel='all';query='';$('#search').value='';render();zoom=Math.max(.7,zoom);applyZoom();centerWord(w);persist();e.target.reset();$('#add-dialog').close();toast(`「${w.word}」已经种进你的花园`);
 });
 function startReview() {
   reviewQueue = words.filter(w => !known.has(w.id) && (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel));
@@ -626,7 +626,7 @@ function renderReview() {
   const w = reviewQueue[reviewIndex];
   $('#review-content').innerHTML = `<div class="review-card"><span class="review-count">今日温习 ${reviewIndex+1} / ${reviewQueue.length}</span><h3 lang="en">${escapeHTML(w.word)}</h3><div class="ipa">${escapeHTML(w.ipa)}</div><button class="audio-button" id="review-speak" aria-label="播放发音">${speaker}</button><div id="review-answer" hidden><p class="meaning">${escapeHTML(w.pos)} ${escapeHTML(w.meaning)}</p><p class="example" lang="en">${escapeHTML(w.example)||'此词暂未收录例句'}</p>${w.exampleZh?`<p class="review-translation">${escapeHTML(w.exampleZh)}</p>`:''}</div><div class="review-actions" id="review-actions"><button class="secondary-button" id="show-answer">想一想，查看释义</button></div></div>`;
   $('#review-speak').onclick = () => speak(w.word);
-  $('#show-answer').onclick = () => { $('#review-answer').hidden = false; $('#review-actions').innerHTML = '<button class="secondary-button" id="review-again">还需温习</button><button class="primary-button" id="review-known">✓ 已经记住</button>'; $('#review-again').onclick = () => {reviewIndex++; renderReview();}; $('#review-known').onclick = () => {known.add(w.id); reviewedCount++; persist(); render(); reviewIndex++; renderReview();}; $('#review-again').focus(); };
+  $('#show-answer').onclick = () => { $('#review-answer').hidden = false; $('#review-actions').innerHTML = '<button class="secondary-button" id="review-again">还需温习</button><button class="primary-button" id="review-known">✓ 已经记住</button>'; $('#review-again').onclick = () => {reviewIndex++; renderReview();}; $('#review-known').onclick = () => {known.add(w.id); cloudSync.queue(`known:${w.id}`,true); reviewedCount++; persist(); render(); reviewIndex++; renderReview();}; $('#review-again').focus(); };
 }
 $('#scope-review').addEventListener('click', startReview);
 $('#start-review').addEventListener('click', startReview); $('#review-nav').addEventListener('click', startReview);
@@ -635,3 +635,64 @@ document.addEventListener('keydown', e => {if(e.key === '/' && !['INPUT','SELECT
 window.addEventListener('pagehide',persist);
 updateStorageNote(); render(); applyZoom();
 if(layoutMigrated){if(matchedWords.length)centerWord(matchedWords[0]);persist();}
+
+// Preserve legacy progress before the first cloud snapshot can change local state.
+try {
+  if(!localStorage.getItem('word-garden-sync-v1')&&!localStorage.getItem('word-garden-local-before-sync')) {
+    localStorage.setItem('word-garden-local-before-sync',JSON.stringify({known:[...known],custom,smallCardAction}));
+  }
+}catch{}
+// Synchronize shared learning data; local camera and fixed layout remain independent.
+const cloudSync=new GardenSync({
+  status:message=>{$('#sync-status').textContent=message;},
+  apply:entries=>{
+    let changed=false;
+    for(const entry of entries) {
+      if(!entry.key.startsWith('custom:')||!validWord(entry.value)||wordById.has(entry.value.id))continue;
+      const w={...entry.value,level:'custom',slot:Math.max(...words.map(w=>w.slot))+1};
+      custom.push(w);words.push(w);wordById.set(w.id,w);mapLayout.add(w,words);changed=true;
+    }
+    for(const entry of entries) {
+      if(entry.key.startsWith('known:')) {
+        const id=entry.key.slice(6);if(!wordById.has(id)||typeof entry.value!=='boolean')continue;
+        if(known.has(id)!==entry.value){entry.value?known.add(id):known.delete(id);changed=true;}
+      } else if(entry.key==='setting:smallCardAction'&&['detail','toggle'].includes(entry.value)&&smallCardAction!==entry.value) {
+        smallCardAction=entry.value;$('#small-card-action').value=smallCardAction;changed=true;
+      }
+    }
+    if(changed){persist();render();applyZoom();if($('#detail-dialog').open&&detailOrigin)renderDetail(detailOrigin);}
+  }
+});
+$('#sync-now').onclick=()=>cloudSync.sync();
+$('#sync-login').hidden=location.protocol==='file:';
+const localBackup=()=>({format:'word-garden-backup-v1',known:[...known],custom,smallCardAction});
+$('#sync-export').onclick=()=>{
+  const url=URL.createObjectURL(new Blob([JSON.stringify(localBackup(),null,2)],{type:'application/json'}));
+  const a=document.createElement('a');a.href=url;a.download=`word-garden-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+$('#sync-import').onclick=async()=>{
+  const backup=localBackup();
+  try {
+    const legacy=JSON.parse(localStorage.getItem('word-garden-local-before-sync')||'null');
+    if(legacy){backup.known=[...new Set([...legacy.known,...backup.known])];backup.custom=[...new Map([...legacy.custom,...backup.custom].map(w=>[w.id,w])).values()];}
+  }catch{}
+  try{localStorage.setItem('word-garden-before-cloud-import',JSON.stringify(backup));await cloudSync.importLocal(backup);}catch(e){toast(e.message);}
+};
+$('#sync-file').onchange=async e=>{
+  const file=e.target.files[0];if(!file)return;
+  try{
+    if(file.size>5*1024*1024)throw new Error('备份文件过大');
+    const data=JSON.parse(await file.text());
+    if(data.format!=='word-garden-backup-v1'||!Array.isArray(data.custom)||!data.custom.every(validWord)||!Array.isArray(data.known)||!data.known.every(id=>typeof id==='string'))throw new Error('备份格式不正确');
+    const entries=data.custom.map(w=>({key:`custom:${w.id}`,value:w}));
+    entries.push(...data.known.map(id=>({key:`known:${id}`,value:true})));
+    if(['detail','toggle'].includes(data.smallCardAction))entries.push({key:'setting:smallCardAction',value:data.smallCardAction});
+    cloudSync.apply(entries);toast('备份已导入本机；点击「导入本机记录到云端」进行合并');
+  }catch(error){toast(error.message);}finally{e.target.value='';}
+};
+if(location.protocol!=='file:') {
+  cloudSync.sync();
+  setInterval(()=>{if(!document.hidden)cloudSync.sync();},30000);
+  window.addEventListener('online',()=>cloudSync.sync());
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloudSync.sync();});
+}

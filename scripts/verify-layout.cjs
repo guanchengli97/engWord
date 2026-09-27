@@ -1,6 +1,7 @@
 // Pure geometry and persistence checks; no browser dependencies.
 const assert = require('node:assert/strict');
-const GroupedWordLayout = require('../map-layout.js');
+const sandbox={module:{exports:{}}};require('node:vm').runInNewContext(require('node:fs').readFileSync(require('node:path').join(__dirname,'../map-layout.js'),'utf8'),sandbox);
+const GroupedWordLayout = sandbox.module.exports;
 const themes = [{id:'work'}, {id:'home'}, {id:'food'}];
 const words = Array.from({length:75}, (_, i) => ({id:`word-${i}`,category:themes[i%3].id}));
 const layout = new GroupedWordLayout(words, themes);

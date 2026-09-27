@@ -1,0 +1,19 @@
+{
+  "name": "word-garden",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-assets.mjs",
+    "dev": "npm run build && node --env-file-if-exists=.env --watch server/index.js",
+    "test": "node --test tests/*.test.mjs",
+    "check:map": "node scripts/verify-map.cjs",
+    "check:sync": "npm run build && node scripts/verify-sync.cjs",
+    "start": "node --env-file-if-exists=.env server/index.js"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0"
+  }
+}
