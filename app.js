@@ -1,10 +1,20 @@
 const themes = [
-  { id: 'nature', name: '自然与万物', icon: '❀', description: '在山川草木之间，收集自然的语言。' },
-  { id: 'feeling', name: '情绪与感受', icon: '♡', description: '为每一种微妙的心情，找到合适的表达。' },
-  { id: 'daily', name: '日常与生活', icon: '☕', description: '把语言放进生活，让平凡的日常闪闪发光。' },
-  { id: 'travel', name: '旅行与探索', icon: '♧', description: '带上好奇心，用新的单词走向更远的地方。' },
-  { id: 'growth', name: '成长与思考', icon: '↗', description: '每一次思考，都在为未来的自己积蓄力量。' },
-  { id: 'art', name: '艺术与灵感', icon: '✧', description: '留意美的细节，让灵感自由生长。' }
+  {id:'work',name:'职场与沟通',icon:'▤',description:'会议、求职、邮件、协作与日常工作。'},
+  {id:'housing',name:'租房与居家',icon:'⌂',description:'看房、签租约、维修、水电与家庭用品。'},
+  {id:'shopping',name:'购物与退换',icon:'♧',description:'超市、衣物、付款、快递和退换货。'},
+  {id:'food',name:'餐饮与食物',icon:'☕',description:'点餐、外带、结账、食材和饮食需求。'},
+  {id:'health',name:'就医与健康',icon:'✚',description:'预约、症状、药房、保险和就医沟通。'},
+  {id:'banking',name:'银行与账单',icon:'＄',description:'账户、工资入账、信用卡、费用与账单。'},
+  {id:'services',name:'办事与公共服务',icon:'▥',description:'表格、证件、邮政、公共机构与社区服务。'},
+  {id:'travel',name:'交通与出行',icon:'↗',description:'开车、公共交通、机场、酒店和问路。'},
+  {id:'digital',name:'电脑与线上沟通',icon:'▣',description:'登录、网络、设备与线上会议。'},
+  {id:'social',name:'社交与人际',icon:'♡',description:'寒暄、邀请、礼貌表达和澄清误解。'},
+  {id:'daily',name:'日常与生活',icon:'☀',description:'日常动作、生活用品和常见活动。'},
+  {id:'growth',name:'学习与思考',icon:'✎',description:'学习、教育、分析、表达与个人成长。'},
+  {id:'nature',name:'自然与万物',icon:'❀',description:'天气、环境、植物、动物与户外世界。'},
+  {id:'feeling',name:'情绪与感受',icon:'♡',description:'为每一种微妙的心情找到合适的表达。'},
+  {id:'art',name:'艺术与休闲',icon:'✧',description:'音乐、影视、艺术和文化生活。'},
+  {id:'general',name:'通用词汇',icon:'Aa',description:'跨场景使用的常用动词、描述词与基础表达。'}
 ];
 const seed = [
   ['bloom','/bluːm/','v.','开花；绽放','Flowers bloom in the warm spring sun.','nature'],
@@ -63,32 +73,98 @@ let storageAvailable = true;
 try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch { storageAvailable = false; }
 const validWord = w => w && typeof w.id === 'string' && ['word','ipa','pos','meaning','example'].every(k => typeof w[k] === 'string') && themes.some(t => t.id === w.category);
 let custom = Array.isArray(saved.custom) ? saved.custom.filter(validWord) : [];
-const words = [...seed.map((w, i) => ({id:`seed-${i}`,word:w[0],ipa:w[1],pos:w[2],meaning:w[3],example:w[4],category:w[5]})), ...custom];
-const known = new Set(Array.isArray(saved.known) ? saved.known.filter(id => words.some(w => w.id === id)) : []);
-let category = 'all', filter = 'all', query = '', zoom = Number.isFinite(saved.zoom) ? Math.min(1.5, Math.max(.25, saved.zoom)) : 1;
+const library = Array.isArray(window.WORD_GARDEN_VOCABULARY) ? window.WORD_GARDEN_VOCABULARY : [];
+// Old custom cards keep the slots they occupied before the library was added.
+const layoutPrefix = Number.isInteger(saved.layoutPrefix) && saved.layoutPrefix >= 0 ? saved.layoutPrefix : custom.length;
+custom = custom.map((w,i) => ({...w, slot:Number.isInteger(w.slot) && w.slot >= seed.length ? w.slot : seed.length+i, level:'custom'}));
+const customNames = new Set(custom.map(w => w.word.toLowerCase()));
+const words = [
+  ...seed.map((w,i) => ({id:`seed-${i}`,word:w[0],ipa:w[1],pos:w[2],meaning:w[3],example:w[4],category:w[5],slot:i,level:'core',source:'original'})),
+  ...library.map((w,i) => ({...w,slot:seed.length+layoutPrefix+i})).filter(w => !customNames.has(w.word.toLowerCase())),
+  ...custom
+].sort((a,b) => a.slot-b.slot);
+const wordById = new Map(words.map(w => [w.id,w]));
+const known = new Set(Array.isArray(saved.known) ? saved.known.filter(id => wordById.has(id)) : []);
+const levelNames = {all:'全部词库',practical:'生活与职场精选',core:'基础常用',extend:'进阶表达',advanced:'扩展阅读',custom:'我的自定义'};
+let studyLevel = Object.hasOwn(levelNames,saved.studyLevel) ? saved.studyLevel : 'all';
+let activeRegion = Number.isInteger(saved.studyRegion) ? saved.studyRegion : 0;
+let matchedWords = [], activeWords = [], regionIds = [];
+const REGION_SIZE = 60;
+let category = 'all', filter = 'all', query = '', zoom = Number.isFinite(saved.zoom) ? Math.min(1.5, Math.max(.1, saved.zoom)) : 1;
+const mapLayout = {columns:6,width:280,height:210,gap:20,padding:24};
+const positionOf = w => ({x:mapLayout.padding + w.slot%mapLayout.columns*(mapLayout.width+mapLayout.gap), y:mapLayout.padding + Math.floor(w.slot/mapLayout.columns)*(mapLayout.height+mapLayout.gap)});
+const camera = { x: Number.isFinite(saved.view?.x) ? saved.view.x : 0, y: Number.isFinite(saved.view?.y) ? saved.view.y : 0 };
+let worldWidth = 0, worldHeight = 0, suppressMapClickUntil = 0;
 let reviewQueue = [], reviewIndex = 0, reviewedCount = 0, toastTimer;
 const speaker = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4 6 8H3v8h3l5 4V4Z"/><path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>';
 const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3200); }
-function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
+function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom,view:camera,layoutPrefix,studyLevel,studyRegion:activeRegion})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
 function updateStorageNote() { if (!storageAvailable) $('.local-note').textContent = '当前进度仅在本次打开时保留'; }
 function renderCategories() { $('#categories').innerHTML = themes.map(t => `<button class="category-button ${category === t.id ? 'active' : ''}" data-category="${t.id}" aria-pressed="${category === t.id}"><span class="category-icon">${t.icon}</span>${t.name}<span class="category-count">${words.filter(w => w.category === t.id).length}</span></button>`).join(''); }
-function card(w) { const isKnown = known.has(w.id), theme = themes.find(t => t.id === w.category); return `<article data-word-id="${escapeHTML(w.id)}" class="word-card ${isKnown?'known':''}"><div class="card-top"><h3 class="word-name" lang="en"><button class="word-detail-button" data-detail="${escapeHTML(w.id)}" aria-label="查看 ${escapeHTML(w.word)} 的详细内容" title="${escapeHTML(w.word)} · 点击查看详情">${escapeHTML(w.word)}</button></h3><button class="audio-button" data-speak="${escapeHTML(w.id)}" aria-label="播放 ${escapeHTML(w.word)} 的发音">${speaker}</button></div><div class="ipa">${escapeHTML(w.ipa || '音标待补充')}</div><p class="meaning"><span>${escapeHTML(w.pos)}</span>${escapeHTML(w.meaning)}</p><p class="example" lang="en">${escapeHTML(w.example) || '给这个单词一点时间，慢慢认识它。'}</p><div class="card-bottom"><span class="category-tag"><span>${theme.icon}</span>${theme.name}</span><button class="status-button" data-toggle="${escapeHTML(w.id)}" aria-pressed="${isKnown}" aria-label="${escapeHTML(w.word)}：${isKnown?'已记住，点击标记为还没记住':'还没记住，点击标记为已记住'}"><span>${isKnown?'✓':'○'}</span>${isKnown?'已记住':'还没记住'}</button></div></article>`; }
-function render() {
+function card(w) {
+  const isKnown = known.has(w.id), theme = themes.find(t => t.id === w.category);
+  return `<article data-word-id="${escapeHTML(w.id)}" class="word-card ${isKnown?'known':''}"><div class="card-top"><h3 class="word-name" lang="en"><button class="word-detail-button" data-detail="${escapeHTML(w.id)}" aria-label="查看 ${escapeHTML(w.word)} 的详细内容" title="${escapeHTML(w.word)} · 点击查看详情">${escapeHTML(w.word)}</button></h3><button class="audio-button" data-speak="${escapeHTML(w.id)}" aria-label="播放 ${escapeHTML(w.word)} 的美式发音">${speaker}</button></div><div class="ipa">${escapeHTML(w.ipa || (w.level === 'practical' ? '点击喇叭，跟读整句' : '音标待补充'))}</div><p class="meaning"><span>${escapeHTML(w.pos)}</span>${escapeHTML(w.meaning)}</p><p class="example" ${w.example ? 'lang="en"' : ''}>${escapeHTML(w.example) || '此词暂未收录例句'}</p><div class="card-bottom"><span class="category-tag"><span>${theme.icon}</span>${theme.name}</span><button class="status-button" data-toggle="${escapeHTML(w.id)}" aria-pressed="${isKnown}" aria-label="${escapeHTML(w.word)}：${isKnown?'已记住，点击标记为还没记住':'还没记住，点击标记为已记住'}"><span>${isKnown?'✓':'○'}</span>${isKnown?'已记住':'还没记住'}</button></div></article>`;
+}
+function renderRegions() {
+  const select = $('#map-region');
+  select.innerHTML = regionIds.map(id => {
+    const first = matchedWords.find(w => Math.floor(w.slot/REGION_SIZE)===id);
+    return `<option value="${id}">词区 ${String(id+1).padStart(3,'0')} · ${escapeHTML(first.word)}</option>`;
+  }).join('');
+  select.value = activeRegion;
+  select.disabled = !regionIds.length;
+  const index = regionIds.indexOf(activeRegion);
+  $('#region-prev').disabled = index <= 0;
+  $('#region-next').disabled = index < 0 || index >= regionIds.length-1;
+  $('#region-summary').textContent = regionIds.length ? `本区 ${activeWords.length} 词 · 第 ${index+1} / ${regionIds.length} 个匹配词区` : '没有匹配的词区';
+}
+function render(focusResults = false) {
   renderCategories();
   const total = words.length, count = known.size, progress = total ? Math.round(count / total * 100) : 0;
-  $('#total-count').innerHTML = `${total} <small>个</small>`; $('#known-count').innerHTML = `${count} <small>个</small>`; $('#unknown-count').innerHTML = `${total-count} <small>个</small>`;
-  $('#review-count').textContent = total-count; $('#progress-value').innerHTML = `${progress}<small>%</small>`; $('#progress-bar').style.width = `${progress}%`;
+  $('#total-count').innerHTML = `${total.toLocaleString()} <small>个</small>`;
+  $('#known-count').innerHTML = `${count.toLocaleString()} <small>个</small>`;
+  $('#unknown-count').innerHTML = `${(total-count).toLocaleString()} <small>个</small>`;
+  $('#review-count').textContent = total-count;
+  $('#progress-value').innerHTML = `${progress}<small>%</small>`; $('#progress-bar').style.width = `${progress}%`;
+  $('#library-summary').textContent = `${total.toLocaleString()} 个词条 · 16 个主题 · ${library.filter(w => w.level==='practical').length} 条原创场景词与表达。先学精选，再逐步扩展。`;
+  $('#dataset-warning').hidden = library.length>0;
+  $('#study-level').innerHTML = Object.entries(levelNames).map(([id,name]) => `<option value="${id}">${name} · ${id==='all'?total:words.filter(w=>w.level===id).length}</option>`).join('');
+  $('#study-level').value = studyLevel;
   const selectedTheme = themes.find(t => t.id === category);
   $('#collection-title').innerHTML = `${selectedTheme ? selectedTheme.name : '我的单词花园'} <span id="collection-count"></span>`;
-  $('#collection-description').textContent = selectedTheme ? selectedTheme.description : '每一个词，都是一颗等待发芽的种子。';
-  const visible = words.filter(w => (category === 'all' || w.category === category) && (filter === 'all' || known.has(w.id) === (filter === 'known')) && (!query || `${w.word} ${w.meaning} ${w.example}`.toLowerCase().includes(query)));
-  $('#collection-count').textContent = visible.length;
-  $('#result-caption').textContent = `${selectedTheme ? selectedTheme.name : '全部主题'} · ${visible.length} 个单词`;
-  $('#word-grid').innerHTML = visible.map(card).join(''); $('#empty-state').hidden = visible.length > 0;
-  document.querySelectorAll('[data-filter]').forEach(b => {const selected = b.dataset.filter === filter; b.classList.toggle('selected', selected); b.setAttribute('aria-pressed', selected);});
-  $('#all-nav').classList.toggle('active', category === 'all' && filter === 'all');
+  $('#collection-description').textContent = selectedTheme ? selectedTheme.description : '词汇、短语和真实场景表达，一点点融入工作与生活。';
+  matchedWords = words.filter(w => (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel) && (filter==='all'||known.has(w.id)===(filter==='known')) && (!query||`${w.word} ${w.meaning} ${w.example} ${w.exampleZh||''}`.toLowerCase().includes(query)));
+  regionIds = [...new Set(matchedWords.map(w => Math.floor(w.slot/REGION_SIZE)))];
+  const previousRegion=activeRegion;
+  if (focusResults || !regionIds.includes(activeRegion)) activeRegion = regionIds[0] ?? 0;
+  activeWords = matchedWords.filter(w => Math.floor(w.slot/REGION_SIZE)===activeRegion);
+  $('#collection-count').textContent = matchedWords.length.toLocaleString();
+  $('#result-caption').textContent = `${selectedTheme?selectedTheme.name:'全部主题'} · ${levelNames[studyLevel]} · 匹配 ${matchedWords.length.toLocaleString()} 词`;
+  $('#word-grid').innerHTML = activeWords.map(w => {
+    const {x,y} = positionOf(w);
+    return card(w).replace('<article ', `<article style="left:${x}px;top:${y}px" `);
+  }).join('');
+  $('#empty-state').hidden = matchedWords.length>0;
+  $('#map-viewport').hidden = matchedWords.length===0;
+  renderRegions(); updateMapSize();
+  if ((focusResults || previousRegion!==activeRegion) && activeWords.length) centerWord(activeWords[0]);
+  document.querySelectorAll('[data-filter]').forEach(b=>{const selected=b.dataset.filter===filter;b.classList.toggle('selected',selected);b.setAttribute('aria-pressed',selected);});
+  $('#all-nav').classList.toggle('active',category==='all'&&filter==='all');
 }
+function centerWord(w) {
+  const {x,y}=positionOf(w);
+  camera.x=$('#map-viewport').clientWidth/2-(x+mapLayout.width/2)*zoom;
+  camera.y=$('#map-viewport').clientHeight/2-(y+mapLayout.height/2)*zoom;
+  paintCamera();
+}
+function changeRegion(id) {
+  activeRegion=Number(id); render(); fitMap(false); persist();
+}
+$('#map-region').addEventListener('change',e=>changeRegion(e.target.value));
+$('#region-prev').addEventListener('click',()=>{const index=regionIds.indexOf(activeRegion);if(index>0)changeRegion(regionIds[index-1]);});
+$('#region-next').addEventListener('click',()=>{const index=regionIds.indexOf(activeRegion);if(index<regionIds.length-1)changeRegion(regionIds[index+1]);});
+$('#study-level').addEventListener('change',e=>{studyLevel=e.target.value;render(true);fitMap(false);persist();});
 function speak(word) {
   if (!('speechSynthesis' in window)) { toast('当前浏览器不支持语音朗读，请使用 Chrome、Edge 或 Safari'); return; }
   speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(word); utterance.lang = 'en-US'; utterance.rate = .85;
@@ -98,8 +174,9 @@ function speak(word) {
 }
 function toggle(id) { if (known.has(id)) known.delete(id); else known.add(id); persist(); render(); const replacement = [...document.querySelectorAll('[data-toggle]')].find(b => b.dataset.toggle === id); replacement?.focus({preventScroll:true}); }
 function handleWordClick(e) {
+  if (e.currentTarget.id === 'word-grid' && performance.now() < suppressMapClickUntil) return;
   const sound = e.target.closest('[data-speak]'), status = e.target.closest('[data-toggle]');
-  if (sound) { speak(words.find(w => w.id === sound.dataset.speak).word); return; }
+  if (sound) { speak(wordById.get(sound.dataset.speak).word); return; }
   if (status) {
     toggle(status.dataset.toggle);
     if ($('#detail-dialog').open) { renderDetail(status.dataset.toggle); $('#detail-content [data-toggle]').focus(); }
@@ -108,7 +185,10 @@ function handleWordClick(e) {
   const detail = e.target.closest('[data-detail]'), wordCard = e.target.closest('[data-word-id]');
   if (detail || wordCard) openDetail(detail ? detail.dataset.detail : wordCard.dataset.wordId);
 }
-function renderDetail(id) { $('#detail-content').innerHTML = card(words.find(w => w.id === id)); }
+function renderDetail(id) {
+  const w=wordById.get(id);
+  $('#detail-content').innerHTML = card(w) + `<div class="word-notes">${w.exampleZh?`<p>${escapeHTML(w.exampleZh)}</p>`:''}<p>${escapeHTML(w.ipaNote||'点击喇叭播放美式发音')}</p><p>${escapeHTML(levelNames[w.level]||'自定义词条')} · ${w.source==='ecdict'?'<a href="https://github.com/skywind3000/ECDICT" target="_blank" rel="noopener">ECDICT 词典释义</a>':'自编学习内容'}</p></div>`;
+}
 let detailOrigin;
 function openDetail(id) {
   if ($('#detail-dialog').open) return;
@@ -121,56 +201,154 @@ $('#detail-dialog').addEventListener('close', () => {
   origin?.focus({preventScroll:true});
   if ('speechSynthesis' in window) speechSynthesis.cancel();
 });
-$('#categories').addEventListener('click', e => {const b = e.target.closest('[data-category]'); if (b) {category = category === b.dataset.category ? 'all' : b.dataset.category; render();}});
-$('.status-tabs').addEventListener('click', e => {const b = e.target.closest('[data-filter]'); if (b) {filter = b.dataset.filter; render();}});
-$('#search').addEventListener('input', e => {query = e.target.value.trim().toLowerCase(); render();});
-function resetFilters() { category = filter = 'all'; query = ''; $('#search').value = ''; render(); }
+$('#categories').addEventListener('click', e => {const b = e.target.closest('[data-category]'); if (b) {category = category === b.dataset.category ? 'all' : b.dataset.category; render(true);}});
+$('.status-tabs').addEventListener('click', e => {const b = e.target.closest('[data-filter]'); if (b) {filter = b.dataset.filter; render(true);}});
+$('#search').addEventListener('input', e => {query = e.target.value.trim().toLowerCase(); render(true);});
+function resetFilters() { category=filter=studyLevel='all'; query=''; $('#search').value=''; render(true); }
 $('#all-nav').addEventListener('click', resetFilters); $('#clear-filters').addEventListener('click', resetFilters);
+function updateMapSize() {
+  const {columns, width, height, gap, padding} = mapLayout;
+  const rows = Math.max(1, Math.ceil((Math.max(...words.map(w=>w.slot))+1) / columns));
+  worldWidth = padding * 2 + columns * width + (columns - 1) * gap;
+  worldHeight = padding * 2 + rows * height + (rows - 1) * gap;
+  $('#word-grid').style.width = `${worldWidth}px`;
+  $('#word-grid').style.height = `${worldHeight}px`;
+  paintCamera();
+}
+function paintCamera() {
+  const viewport = $('#map-viewport');
+  if (!viewport.clientWidth || !worldWidth) return;
+  const firstRow = activeRegion * REGION_SIZE / mapLayout.columns;
+  const top = firstRow * (mapLayout.height + mapLayout.gap);
+  const regionHeight = Math.min(worldHeight-top, REGION_SIZE/mapLayout.columns*(mapLayout.height+mapLayout.gap)+mapLayout.padding*2-mapLayout.gap);
+  const clampAxis = (value, available, origin, extent) => extent<=available ? (available-extent)/2-origin : Math.max(available-origin-extent,Math.min(-origin,value));
+  camera.x=clampAxis(camera.x,viewport.clientWidth,0,worldWidth*zoom);
+  camera.y=clampAxis(camera.y,viewport.clientHeight,top*zoom,regionHeight*zoom);
+  $('#word-grid').style.transform=`translate(${camera.x}px, ${camera.y}px) scale(${zoom})`;
+  const fits=activeWords.length>0 && activeWords.map(positionOf).every(p=>p.x*zoom+camera.x>=-1&&p.y*zoom+camera.y>=-1&&(p.x+mapLayout.width)*zoom+camera.x<=viewport.clientWidth+1&&(p.y+mapLayout.height)*zoom+camera.y<=viewport.clientHeight+1);
+  $('#zoom-fit').setAttribute('aria-pressed',fits);
+}
 function applyZoom() {
   const grid = $('#word-grid');
   const mode = zoom <= .4 ? 'overview' : zoom <= .65 ? 'compact' : zoom < .9 ? 'standard' : 'detail';
   grid.dataset.density = mode;
   $('#status-hint').textContent = ['overview','compact'].includes(mode) ? '点击单词，在详情中标记进步' : '点击卡片右下角，标记你的进步';
-  grid.style.setProperty('--word-zoom', zoom);
-  document.body.classList.toggle('garden-overview', mode === 'overview');
+  // Compensate text size at overview levels, without changing any card coordinates.
+  grid.style.setProperty('--map-title-size', `${Math.max(25, 11 / zoom)}px`);
+  grid.style.setProperty('--map-label-size', `${Math.max(12, 10 / zoom)}px`);
   $('#zoom-value').value = `${Math.round(zoom*100)}%`;
   $('#zoom-slider').value = Math.round(zoom*100);
-  $('#zoom-out').disabled = zoom <= .25;
+  $('#zoom-out').disabled = zoom <= .1;
   $('#zoom-in').disabled = zoom >= 1.5;
-  $('#zoom-fit').setAttribute('aria-pressed', mode === 'overview');
-  $('#zoom-mode').textContent = {overview:'单词全览', compact:'词义速览', standard:'发音与释义', detail:'详细学习'}[mode];
+  $('#zoom-mode').textContent = {overview:'固定地图 · 全览', compact:'固定地图 · 词义', standard:'固定地图 · 发音', detail:'固定地图 · 详情'}[mode];
   $('#zoom-slider').setAttribute('aria-valuetext', `${Math.round(zoom*100)}%，${$('#zoom-mode').textContent}`);
+  paintCamera();
 }
 function setZoom(value, anchor) {
-  const grid = $('#word-grid');
-  // Keep the word nearest the pointer (or the top visible row) in view as rows reflow.
-  const anchorCard = anchor || [...grid.children].find(c => c.getBoundingClientRect().top >= $('.map-toolbar').getBoundingClientRect().bottom && c.getBoundingClientRect().top < innerHeight);
-  const oldTop = anchorCard?.getBoundingClientRect().top;
-  const wasOverview = document.body.classList.contains('garden-overview');
-  zoom = Math.max(.25, Math.min(1.5, Math.round(value*100)/100));
+  const viewport = $('#map-viewport');
+  const point = anchor || {x:viewport.clientWidth/2, y:viewport.clientHeight/2};
+  const worldPoint = {x:(point.x-camera.x)/zoom, y:(point.y-camera.y)/zoom};
+  zoom = Math.max(.1, Math.min(1.5, Math.round(value*1000)/1000));
+  camera.x = point.x - worldPoint.x*zoom;
+  camera.y = point.y - worldPoint.y*zoom;
   applyZoom(); persist();
-  if (wasOverview !== document.body.classList.contains('garden-overview')) {
-    $('.collection').scrollIntoView({block:'start'});
-  } else if (anchorCard && oldTop !== undefined) {
-    window.scrollBy(0, anchorCard.getBoundingClientRect().top - oldTop);
-  }
+}
+function fitMap(scrollToMap = true) {
+  if (!activeWords.length) return;
+  if (scrollToMap) document.body.classList.add('garden-overview');
+  const viewport=$('#map-viewport');
+  const points=activeWords.map(positionOf);
+  const left=Math.min(...points.map(p=>p.x))-mapLayout.padding;
+  const top=Math.min(...points.map(p=>p.y))-mapLayout.padding;
+  const width=Math.max(...points.map(p=>p.x))+mapLayout.width+mapLayout.padding-left;
+  const height=Math.max(...points.map(p=>p.y))+mapLayout.height+mapLayout.padding-top;
+  zoom=Math.max(.1,Math.min(1,viewport.clientWidth/width,viewport.clientHeight/height));
+  camera.x=(viewport.clientWidth-width*zoom)/2-left*zoom;
+  camera.y=(viewport.clientHeight-height*zoom)/2-top*zoom;
+  applyZoom(); persist();
+  if(scrollToMap) $('.map-toolbar').scrollIntoView({block:'start'});
 }
 $('#zoom-out').addEventListener('click', () => setZoom(zoom-.1));
 $('#zoom-in').addEventListener('click', () => setZoom(zoom+.1));
 $('#zoom-slider').addEventListener('input', e => setZoom(Number(e.target.value)/100));
-$('#zoom-reset').addEventListener('click', () => setZoom(1));
-$('#zoom-fit').addEventListener('click', () => {setZoom(.25); $('.collection').scrollIntoView({block:'start'});});
-// Ctrl + wheel also handles trackpad pinch events without intercepting ordinary scrolling.
-let wheelDelta = 0;
-$('#word-grid').addEventListener('wheel', e => {
+$('#zoom-reset').addEventListener('click', () => {
+  document.body.classList.remove('garden-overview');
+  zoom=1; applyZoom(); if(activeWords.length) centerWord(activeWords[0]); persist();
+});
+$('#zoom-fit').addEventListener('click',()=>fitMap());
+const viewport = $('#map-viewport');
+viewport.addEventListener('wheel', e => {
   if (!e.ctrlKey && !e.metaKey) return;
   e.preventDefault();
-  wheelDelta += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1);
-  if (Math.abs(wheelDelta) >= 15) {
-    setZoom(zoom + (wheelDelta < 0 ? .05 : -.05), e.target.closest('[data-word-id]'));
-    wheelDelta = 0;
-  }
+  const rect = viewport.getBoundingClientRect();
+  const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? viewport.clientHeight : 1);
+  setZoom(zoom * Math.exp(-Math.max(-100, Math.min(100, delta))*.005), {x:e.clientX-rect.left, y:e.clientY-rect.top});
 }, {passive:false});
+// Pointer gestures keep word positions fixed; only the camera moves.
+const pointers = new Map();
+let drag = null, pinch = null;
+function pinchMetrics() {
+  const [a,b] = [...pointers.values()];
+  const rect = viewport.getBoundingClientRect();
+  return {distance:Math.hypot(a.x-b.x,a.y-b.y), x:(a.x+b.x)/2-rect.left, y:(a.y+b.y)/2-rect.top};
+}
+viewport.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
+  if (pointers.size === 1) drag = {id:e.pointerId,x:e.clientX,y:e.clientY,panX:camera.x,panY:camera.y,moved:false};
+  if (pointers.size === 2) {
+    const metric = pinchMetrics();
+    pinch = {distance:Math.max(1,metric.distance),zoom,worldX:(metric.x-camera.x)/zoom,worldY:(metric.y-camera.y)/zoom};
+    suppressMapClickUntil = performance.now()+500;
+  }
+});
+viewport.addEventListener('pointermove', e => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
+  if (pinch && pointers.size >= 2) {
+    const metric = pinchMetrics();
+    zoom = Math.max(.1,Math.min(1.5,pinch.zoom*metric.distance/pinch.distance));
+    camera.x = metric.x-pinch.worldX*zoom; camera.y = metric.y-pinch.worldY*zoom;
+    applyZoom(); suppressMapClickUntil = performance.now()+500;
+  } else if (drag && drag.id === e.pointerId) {
+    const dx = e.clientX-drag.x, dy = e.clientY-drag.y;
+    if (!drag.moved && Math.hypot(dx,dy)<6) return;
+    drag.moved = true; viewport.setPointerCapture(e.pointerId); viewport.classList.add('is-dragging');
+    camera.x = drag.panX+dx; camera.y = drag.panY+dy;
+    paintCamera(); suppressMapClickUntil = performance.now()+500;
+  }
+});
+function endMapPointer(e) {
+  if (!pointers.has(e.pointerId)) return;
+  if (drag?.moved || pinch) suppressMapClickUntil = performance.now()+500;
+  pointers.delete(e.pointerId); pinch = null; drag = null;
+  viewport.classList.remove('is-dragging');
+  if (viewport.hasPointerCapture(e.pointerId)) viewport.releasePointerCapture(e.pointerId);
+  if (pointers.size === 1) {
+    const [id,point] = [...pointers.entries()][0];
+    drag = {id,x:point.x,y:point.y,panX:camera.x,panY:camera.y,moved:false};
+  }
+  persist();
+}
+window.addEventListener('pointerup', endMapPointer);
+window.addEventListener('pointercancel', endMapPointer);
+viewport.addEventListener('keydown', e => {
+  if (e.target !== viewport) return;
+  const directions = {ArrowLeft:[90,0],ArrowRight:[-90,0],ArrowUp:[0,90],ArrowDown:[0,-90]};
+  if (directions[e.key]) {e.preventDefault(); camera.x+=directions[e.key][0]; camera.y+=directions[e.key][1]; paintCamera(); persist();}
+});
+// Keyboard focus can reach a word outside the camera: bring that fixed cell into view.
+viewport.addEventListener('focusin', e => {
+  const cell = e.target.closest('[data-word-id]');
+  if (!cell) return;
+  const left = cell.offsetLeft*zoom+camera.x, top = cell.offsetTop*zoom+camera.y;
+  if (left<0) camera.x-=left;
+  else if (left+mapLayout.width*zoom>viewport.clientWidth) camera.x-=left+mapLayout.width*zoom-viewport.clientWidth;
+  if (top<0) camera.y-=top;
+  else if (top+mapLayout.height*zoom>viewport.clientHeight) camera.y-=top+mapLayout.height*zoom-viewport.clientHeight;
+  paintCamera();
+});
+new ResizeObserver(() => {paintCamera();}).observe(viewport);
 $('#add-category').innerHTML = themes.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
 $('#add-word').addEventListener('click', () => {if (category !== 'all') $('#add-category').value = category; $('#add-dialog').showModal();});
 document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => document.getElementById(b.dataset.close).close()));
@@ -179,21 +357,23 @@ $('#word-form').addEventListener('submit', e => {
   e.preventDefault(); const data = Object.fromEntries(new FormData(e.target)); for (const k of Object.keys(data)) data[k] = data[k].trim();
   if (!data.word || !data.meaning) {toast('请填写单词和中文释义'); return;}
   if (words.some(w => w.word.toLowerCase() === data.word.toLowerCase())) {toast('这颗单词种子已经在花园里了'); return;}
-  const w = { ...data, id:`custom-${Date.now()}-${Math.random().toString(36).slice(2,8)}` }; custom.push(w); words.unshift(w); persist(); resetFilters(); e.target.reset(); $('#add-dialog').close(); toast(`「${w.word}」已经种进你的花园`);
+  const w={...data,id:`custom-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,level:'custom',slot:Math.max(...words.map(w=>w.slot))+1};
+  custom.push(w);words.push(w);wordById.set(w.id,w); category=filter=studyLevel='all';query='';$('#search').value='';activeRegion=Math.floor(w.slot/REGION_SIZE);render();centerWord(w);persist();e.target.reset();$('#add-dialog').close();toast(`「${w.word}」已经种进你的花园`);
 });
 function startReview() {
-  reviewQueue = words.filter(w => !known.has(w.id) && (category === 'all' || w.category === category));
+  reviewQueue = words.filter(w => !known.has(w.id) && (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel));
   for (let i = reviewQueue.length-1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [reviewQueue[i],reviewQueue[j]] = [reviewQueue[j],reviewQueue[i]]; }
   reviewQueue = reviewQueue.slice(0,10); reviewIndex = reviewedCount = 0; renderReview(); $('#review-dialog').showModal();
 }
 function renderReview() {
-  if (reviewIndex >= reviewQueue.length) { $('#review-content').innerHTML = `<div class="review-card"><span style="font-size:44px;color:#91a679">✿</span><h2>${reviewQueue.length?'今天又向前了一小步':'这些单词都已记住'}</h2><p>${reviewQueue.length?`本轮温习了 ${reviewQueue.length} 个单词，新记住 ${reviewedCount} 个。<br>给认真学习的自己一点鼓励吧。`:'真好！可以去其他主题逛逛，或种下新的单词。'}</p><button class="primary-button" id="finish-review">回到花园</button></div>`; $('#finish-review').onclick = () => $('#review-dialog').close(); return; }
+  if (reviewIndex >= reviewQueue.length) { $('#review-content').innerHTML = `<div class="review-card"><span style="font-size:44px;color:#91a679">✿</span><h2>${reviewQueue.length?'今天又向前了一小步':'当前范围没有待温习词条'}</h2><p>${reviewQueue.length?`本轮温习了 ${reviewQueue.length} 个单词，新记住 ${reviewedCount} 个。<br>给认真学习的自己一点鼓励吧。`:'可以切换学习范围或主题，继续认识新的单词。'}</p><button class="primary-button" id="finish-review">回到花园</button></div>`; $('#finish-review').onclick = () => $('#review-dialog').close(); return; }
   const w = reviewQueue[reviewIndex];
-  $('#review-content').innerHTML = `<div class="review-card"><span class="review-count">今日温习 ${reviewIndex+1} / ${reviewQueue.length}</span><h3 lang="en">${escapeHTML(w.word)}</h3><div class="ipa">${escapeHTML(w.ipa)}</div><button class="audio-button" id="review-speak" aria-label="播放发音">${speaker}</button><div id="review-answer" hidden><p class="meaning">${escapeHTML(w.pos)} ${escapeHTML(w.meaning)}</p><p class="example" lang="en">${escapeHTML(w.example)}</p></div><div class="review-actions" id="review-actions"><button class="secondary-button" id="show-answer">想一想，查看释义</button></div></div>`;
+  $('#review-content').innerHTML = `<div class="review-card"><span class="review-count">今日温习 ${reviewIndex+1} / ${reviewQueue.length}</span><h3 lang="en">${escapeHTML(w.word)}</h3><div class="ipa">${escapeHTML(w.ipa)}</div><button class="audio-button" id="review-speak" aria-label="播放发音">${speaker}</button><div id="review-answer" hidden><p class="meaning">${escapeHTML(w.pos)} ${escapeHTML(w.meaning)}</p><p class="example" lang="en">${escapeHTML(w.example)||'此词暂未收录例句'}</p>${w.exampleZh?`<p class="review-translation">${escapeHTML(w.exampleZh)}</p>`:''}</div><div class="review-actions" id="review-actions"><button class="secondary-button" id="show-answer">想一想，查看释义</button></div></div>`;
   $('#review-speak').onclick = () => speak(w.word);
   $('#show-answer').onclick = () => { $('#review-answer').hidden = false; $('#review-actions').innerHTML = '<button class="secondary-button" id="review-again">还需温习</button><button class="primary-button" id="review-known">✓ 已经记住</button>'; $('#review-again').onclick = () => {reviewIndex++; renderReview();}; $('#review-known').onclick = () => {known.add(w.id); reviewedCount++; persist(); render(); reviewIndex++; renderReview();}; $('#review-again').focus(); };
 }
+$('#scope-review').addEventListener('click', startReview);
 $('#start-review').addEventListener('click', startReview); $('#review-nav').addEventListener('click', startReview);
 $('#review-dialog').addEventListener('close', () => { if ('speechSynthesis' in window) speechSynthesis.cancel(); });
 document.addEventListener('keydown', e => {if(e.key === '/' && !['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName) && !document.querySelector('dialog[open]')) { e.preventDefault(); $('#search').focus(); }});
-updateStorageNote(); applyZoom(); render();
+updateStorageNote(); render(); applyZoom();

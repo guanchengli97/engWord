@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "built": "2026-09-27",
+  "total": 10000,
+  "levels": {
+    "practical": 134,
+    "core": 3000,
+    "extend": 3000,
+    "advanced": 3866
+  },
+  "categories": {
+    "work": 273,
+    "housing": 157,
+    "shopping": 165,
+    "food": 257,
+    "health": 271,
+    "banking": 158,
+    "services": 173,
+    "travel": 313,
+    "digital": 178,
+    "social": 237,
+    "general": 6604,
+    "daily": 253,
+    "growth": 255,
+    "nature": 251,
+    "feeling": 207,
+    "art": 248
+  },
+  "source": "https://github.com/skywind3000/ECDICT",
+  "sourceCommit": "bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b",
+  "sourceSha256": "1a6947e04785db63613a92e14903cdae7954f7e84860b10e68e5c7cbb3f9c3cf",
+  "notes": "学习层级是本项目按来源词频和场景选词划分，不等同于 CEFR 或官方考试等级。词典音标以英式为主，播放优先使用 en-US 语音。"
+}
