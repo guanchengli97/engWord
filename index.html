@@ -7,6 +7,7 @@
   <title>拾词 · 每天一点，慢慢记住</title>
   <link rel="stylesheet" href="style.css">
   <script src="data/vocabulary.js" defer></script>
+  <script src="map-layout.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -32,19 +33,21 @@
         <div class="library-guide"><div><span class="eyebrow">ENGLISH FOR LIFE IN THE U.S.</span><strong>从生活必需，到工作自如</strong><p id="library-summary">正在载入工作与生活词库…</p></div><label for="study-level">选择学习范围<select id="study-level" aria-label="选择学习范围"></select></label></div>
         <p class="dataset-warning" id="dataset-warning" role="alert" hidden>扩展词库未能加载。请确认 data/vocabulary.js 与页面一起保存，然后刷新。</p>
         <div class="collection-heading"><div><h2 id="collection-title">我的单词花园 <span id="collection-count">0</span></h2><p id="collection-description">每一个词，都是一颗等待发芽的种子。</p></div><div class="collection-actions"><button class="secondary-button" id="scope-review">温习本范围</button><button class="secondary-button" id="add-word">＋ 添加单词</button></div></div>
+        <div id="map-panel">
         <div class="toolbar"><div class="status-tabs" role="group" aria-label="记忆状态筛选"><button class="selected" data-filter="all" aria-pressed="true">全部单词</button><button data-filter="known" aria-pressed="false"><span class="dot green-dot"></span>已记住</button><button data-filter="unknown" aria-pressed="false"><span class="dot red-dot"></span>还没记住</button></div><div class="tools"><label class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="search" placeholder="搜索单词或释义…" aria-label="搜索单词或释义"><kbd>/</kbd></label></div></div>
         <div class="grid-caption"><span id="result-caption">全部主题</span><span><i class="dot green-dot"></i> 已记住 <i class="dot red-dot"></i> 还没记住 <span class="caption-divider">|</span> <span id="status-hint">点击卡片右下角，标记你的进步</span></span></div>
         <div class="map-toolbar" aria-label="单词地图缩放">
-          <div class="map-mode"><span id="zoom-mode">详细学习</span><small id="zoom-hint">位置固定 · 拖动 / 滚轮浏览 · Ctrl / ⌘ + 滚轮缩放</small></div>
-          <div class="map-controls"><button class="view-button" id="zoom-fit">▦ 全图</button><div class="zoom-control"><button id="zoom-out" aria-label="缩小单词卡片">−</button><input id="zoom-slider" type="range" min="0" max="100" step="0.1" value="100" aria-label="单词地图缩放比例"><output id="zoom-value" for="zoom-slider">100%</output><button id="zoom-in" aria-label="放大单词卡片">＋</button></div><button class="view-button" id="zoom-reset" title="恢复详细学习视图">重置</button></div>
+          <div class="map-mode"><span id="zoom-mode">详细学习</span><small id="zoom-hint">固定 20 列 · 按主题向下排列 · 拖动 / 滚轮浏览 · Ctrl / ⌘ + 滚轮缩放</small></div>
+          <div class="map-controls"><button class="view-button" id="zoom-fit">▦ 全图</button><div class="zoom-control"><button id="zoom-out" aria-label="缩小单词卡片">−</button><input id="zoom-slider" type="range" min="0" max="100" step="0.1" value="100" aria-label="单词地图缩放比例"><output id="zoom-value" for="zoom-slider">100%</output><button id="zoom-in" aria-label="放大单词卡片">＋</button></div><button class="view-button" id="zoom-reset" title="恢复详细学习视图">重置</button><button class="view-button" id="map-fullscreen" aria-pressed="false" aria-controls="map-panel" title="全屏查看地图">⛶ 全屏</button></div>
         </div>
-        <div class="map-context"><span id="viewport-summary">所有单词都在同一张地图上</span><div id="search-navigation" hidden><button id="match-prev" aria-label="上一个匹配单词">←</button><span id="match-position"></span><button id="match-next" aria-label="下一个匹配单词">→</button></div></div>
+        <div class="map-context"><span id="viewport-summary">固定 20 列，同类相邻，仍在一张连续地图上</span><div id="search-navigation" hidden><button id="match-prev" aria-label="上一个匹配单词">←</button><span id="match-position"></span><button id="match-next" aria-label="下一个匹配单词">→</button></div></div>
         <div id="map-viewport" tabindex="0" role="region" aria-label="连续单词地图，可拖动、滚轮或方向键浏览，Home 和 End 到达首尾">
           <canvas id="map-canvas" aria-hidden="true"></canvas>
           <div class="word-grid" id="word-grid" aria-label="视野附近的单词"></div>
-          <div class="map-minimap"><canvas id="map-minimap" tabindex="0" role="slider" aria-label="全图位置，点击或拖动定位，方向键微调" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-orientation="vertical"></canvas><span>全图定位</span></div>
+          <div class="map-minimap"><canvas id="map-minimap" tabindex="0" role="slider" aria-label="全图位置，点击或拖动定位，上下左右方向键微调" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-orientation="vertical"></canvas><span>全图定位</span></div>
         </div>
         <div class="empty-state" id="empty-state" hidden><span>☘</span><h3>这里还没有单词</h3><p>试试其他关键词，或者种下一颗新的单词种子。</p><button class="secondary-button" id="clear-filters">查看全部单词</button></div>
+        </div>
       </section>
       <footer><span>✳</span> 学习不必匆忙，每一次打开都是新的生长。<small>MADE FOR YOUR LITTLE EVERYDAY PROGRESS</small><div class="source-footer">词库：<a href="https://github.com/skywind3000/ECDICT" target="_blank" rel="noopener">ECDICT（MIT）</a>与原创场景表达 · <a href="data/SOURCES.md" target="_blank" rel="noopener">来源与学习范围</a></div></footer>
     </div>

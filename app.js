@@ -74,7 +74,7 @@ try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catc
 const validWord = w => w && typeof w.id === 'string' && ['word','ipa','pos','meaning','example'].every(k => typeof w[k] === 'string') && themes.some(t => t.id === w.category);
 let custom = Array.isArray(saved.custom) ? saved.custom.filter(validWord) : [];
 const library = Array.isArray(window.WORD_GARDEN_VOCABULARY) ? window.WORD_GARDEN_VOCABULARY : [];
-// Old custom cards keep the slots they occupied before the library was added.
+// Legacy slots keep identity/order for migration; grouped coordinates are stored separately.
 const layoutPrefix = Number.isInteger(saved.layoutPrefix) && saved.layoutPrefix >= 0 ? saved.layoutPrefix : custom.length;
 custom = custom.map((w,i) => ({...w, slot:Number.isInteger(w.slot) && w.slot >= seed.length ? w.slot : seed.length+i, level:'custom'}));
 const customNames = new Set(custom.map(w => w.word.toLowerCase()));
@@ -89,21 +89,22 @@ const levelNames = {all:'全部词库',practical:'生活与职场精选',core:'�
 let studyLevel = Object.hasOwn(levelNames,saved.studyLevel) ? saved.studyLevel : 'all';
 let matchedWords = [], matchedSlots = new Set(), searchMatchIndex = 0;
 let matchedBounds = null;
-const wordBySlot = new Map(words.map(w => [w.slot,w]));
+
 const renderedCards = new Map();
 const MAX_ZOOM = 1.5, CANVAS_ZOOM = .14;
-let mapFrame = 0, saveViewTimer;
+let mapFrame = 0, saveViewTimer, isCanvasMode = false;
 let miniBase = null, miniDirty = true;
-let category = 'all', filter = 'all', query = '', zoom = Number.isFinite(saved.zoom) ? Math.min(1.5, Math.max(.00001, saved.zoom)) : 1;
-const mapLayout = {columns:6,width:280,height:210,gap:20,padding:24};
-const positionOf = w => ({x:mapLayout.padding + w.slot%mapLayout.columns*(mapLayout.width+mapLayout.gap), y:mapLayout.padding + Math.floor(w.slot/mapLayout.columns)*(mapLayout.height+mapLayout.gap)});
-const camera = { x: Number.isFinite(saved.view?.x) ? saved.view.x : 0, y: Number.isFinite(saved.view?.y) ? saved.view.y : 0 };
+const layoutMigrated = saved.groupedMap?.version !== 3;
+const mapLayout = new GroupedWordLayout(words, themes, saved.groupedMap);
+const positionOf = word => mapLayout.positionOf(word);
+let category='all',filter='all',query='',zoom=!layoutMigrated && Number.isFinite(saved.zoom)?Math.min(1.5,Math.max(.00001,saved.zoom)):.6;
+const camera={x:!layoutMigrated && Number.isFinite(saved.view?.x)?saved.view.x:0,y:!layoutMigrated && Number.isFinite(saved.view?.y)?saved.view.y:0};
 let worldWidth = 0, worldHeight = 0, suppressMapClickUntil = 0;
 let reviewQueue = [], reviewIndex = 0, reviewedCount = 0, toastTimer;
 const speaker = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4 6 8H3v8h3l5 4V4Z"/><path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>';
 const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3200); }
-function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom,view:camera,layoutPrefix,studyLevel})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
+function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom,view:camera,layoutPrefix,studyLevel,groupedMap:mapLayout.snapshot()})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
 function updateStorageNote() { if (!storageAvailable) $('.local-note').textContent = '当前进度仅在本次打开时保留'; }
 function renderCategories() { $('#categories').innerHTML = themes.map(t => `<button class="category-button ${category === t.id ? 'active' : ''}" data-category="${t.id}" aria-pressed="${category === t.id}"><span class="category-icon">${t.icon}</span>${t.name}<span class="category-count">${words.filter(w => w.category === t.id).length}</span></button>`).join(''); }
 function card(w) {
@@ -139,7 +140,7 @@ function render(focusResults = false) {
   const selectedTheme = themes.find(t => t.id === category);
   $('#collection-title').innerHTML = `${selectedTheme ? selectedTheme.name : '我的单词花园'} <span id="collection-count"></span>`;
   $('#collection-description').textContent = selectedTheme ? selectedTheme.description : '词汇、短语和真实场景表达，一点点融入工作与生活。';
-  matchedWords = words.filter(w => (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel) && (filter==='all'||known.has(w.id)===(filter==='known')) && (!query||`${w.word} ${w.meaning} ${w.example} ${w.exampleZh||''}`.toLowerCase().includes(query)));
+  matchedWords = words.filter(w => (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel) && (filter==='all'||known.has(w.id)===(filter==='known')) && (!query||`${w.word} ${w.meaning} ${w.example} ${w.exampleZh||''}`.toLowerCase().includes(query))).sort((a,b)=>mapLayout.orderOf(a)-mapLayout.orderOf(b));
   matchedSlots = new Set(matchedWords.map(w=>w.slot));
   matchedBounds = boundsOf(matchedWords);
   if(focusResults) searchMatchIndex=0;
@@ -216,10 +217,7 @@ function boundsOf(list) {
   return {left:left-mapLayout.padding,top:top-mapLayout.padding,width:right-left+2*mapLayout.padding,height:bottom-top+2*mapLayout.padding};
 }
 function updateMapSize() {
-  const {columns,width,height,gap,padding}=mapLayout;
-  const maxSlot=words.reduce((max,w)=>Math.max(max,w.slot),0);
-  worldWidth=padding*2+columns*width+(columns-1)*gap;
-  worldHeight=padding*2+Math.ceil((maxSlot+1)/columns)*(height+gap)-gap;
+  worldWidth=mapLayout.worldWidth;worldHeight=mapLayout.worldHeight;
   $('#word-grid').style.width=`${worldWidth}px`;
   $('#word-grid').style.height=`${worldHeight}px`;
   paintCamera();
@@ -245,7 +243,7 @@ function paintCamera() {
   $('#zoom-fit').setAttribute('aria-pressed',fits);
   if(!mapFrame) mapFrame=requestAnimationFrame(()=>{mapFrame=0;renderVisibleWords();});
 }
-// Slots provide a spatial index: visit only rows and columns intersecting the camera.
+// Column-major cells provide a spatial index across every theme on the same map.
 function wordsInView(overscan=0) {
   const view=$('#map-viewport'),result=[];
   const left=(-camera.x-overscan)/zoom,top=(-camera.y-overscan)/zoom;
@@ -253,12 +251,12 @@ function wordsInView(overscan=0) {
   const pitchX=mapLayout.width+mapLayout.gap,pitchY=mapLayout.height+mapLayout.gap;
   const firstColumn=Math.max(0,Math.floor((left-mapLayout.padding-mapLayout.width)/pitchX));
   const lastColumn=Math.min(mapLayout.columns-1,Math.floor((right-mapLayout.padding)/pitchX));
-  const firstRow=Math.max(0,Math.floor((top-mapLayout.padding-mapLayout.height)/pitchY));
-  const lastRow=Math.min(Math.ceil(worldHeight/pitchY)-1,Math.floor((bottom-mapLayout.padding)/pitchY));
+  const firstRow=Math.max(0,Math.floor((top-mapLayout.padding-mapLayout.headerHeight-mapLayout.height)/pitchY));
+  const lastRow=Math.min(mapLayout.rows-1,Math.floor((bottom-mapLayout.padding-mapLayout.headerHeight)/pitchY));
   for(let row=firstRow;row<=lastRow;row++) for(let col=firstColumn;col<=lastColumn;col++) {
-    const slot=row*mapLayout.columns+col;
-    if(!matchedSlots.has(slot)) continue;
-    const word=wordBySlot.get(slot),p=positionOf(word);
+    const word=mapLayout.wordAt(col,row);
+    if(!word||!matchedSlots.has(word.slot))continue;
+    const p=positionOf(word);
     if(p.x+mapLayout.width>=left&&p.x<=right&&p.y+mapLayout.height>=top&&p.y<=bottom) result.push(word);
   }
   return result;
@@ -271,9 +269,11 @@ function prepareCanvas(canvas,width,height) {
   const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);
   return ctx;
 }
-function drawMapOverview(visible) {
+function drawMapOverview(visible, canvasMode) {
   const view=$('#map-viewport'),canvas=$('#map-canvas');
   const ctx=prepareCanvas(canvas,view.clientWidth,view.clientHeight);
+  drawThemeBackgrounds(ctx,view.clientWidth,view.clientHeight);
+  if(!canvasMode)return;
   // Two passes retain visible green progress even when several rows share a pixel.
   for(const remembered of [false,true]) {
     ctx.fillStyle=remembered?'#9eb786':'#dcbfae';
@@ -292,11 +292,34 @@ function drawMapOverview(visible) {
     }
   }
 }
+const themeTints=['#f0f3e7','#f5eee5','#edf3ed','#f5f0de','#edf1f4','#f2edf2'];
+function drawThemeBackgrounds(ctx,width,height) {
+  for(const group of mapLayout.groups) {
+    const b=mapLayout.boundsOfGroup(group),x=b.left*zoom+camera.x,y=b.top*zoom+camera.y,w=b.width*zoom,h=b.height*zoom;
+    if(x>width||x+w<0||y>height||y+h<0)continue;
+    const themeIndex=themes.findIndex(t=>t.id===group.category),theme=themes[themeIndex];
+    ctx.fillStyle=themeTints[themeIndex%themeTints.length];ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle='#c9d4bd';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);
+    const labelY=(mapLayout.padding+group.startRow*(mapLayout.height+mapLayout.gap)+mapLayout.headerHeight*.6)*zoom+camera.y;
+    if(labelY>=0&&labelY<height&&w>20) {
+      ctx.save();ctx.beginPath();ctx.rect(x+4,y,w-8,mapLayout.headerHeight*zoom);ctx.clip();
+      ctx.font=`500 ${Math.max(11,Math.min(18,28*zoom))}px "Noto Sans SC", sans-serif`;
+      ctx.fillStyle='#657b53';
+      ctx.fillText(`${theme.name} · ${group.count.toLocaleString()} 词`,Math.max(x+8,8),labelY);
+      ctx.restore();
+    }
+  }
+}
 function drawMinimap() {
-  const canvas=$('#map-minimap'),width=54,height=164;
+  const canvas=$('#map-minimap'),width=72,height=164;
   if(miniDirty||!miniBase) {
     miniBase=document.createElement('canvas');miniBase.width=width;miniBase.height=height;
     const base=miniBase.getContext('2d');base.fillStyle='#f5f6ed';base.fillRect(0,0,width,height);
+    for(const group of mapLayout.groups) {
+      const b=mapLayout.boundsOfGroup(group);
+      base.fillStyle=themeTints[themes.findIndex(t=>t.id===group.category)%themeTints.length];
+      base.fillRect(b.left/worldWidth*width,b.top/worldHeight*height,b.width/worldWidth*width,b.height/worldHeight*height);
+    }
     for(const remembered of [false,true]) {
       base.fillStyle=remembered?'#78985e':'#dcbfae';
       for(const word of matchedWords) {
@@ -314,17 +337,21 @@ function drawMinimap() {
   const boxHeight=Math.min(height,Math.max(5,view.clientHeight/zoom/worldHeight*height));
   const boxWidth=Math.min(width,Math.max(5,view.clientWidth/zoom/worldWidth*width));
   ctx.fillStyle='#5a774a22';ctx.strokeStyle='#526e43';ctx.lineWidth=1.5;
-  ctx.fillRect(left,Math.min(top,height-boxHeight),boxWidth,boxHeight);
-  ctx.strokeRect(left+.75,Math.min(top,height-boxHeight)+.75,boxWidth-1.5,boxHeight-1.5);
-  const progress=Math.round(Math.max(0,Math.min(1,(-camera.y+view.clientHeight/2)/zoom/worldHeight))*100);
-  canvas.setAttribute('aria-valuenow',progress);canvas.setAttribute('aria-valuetext',`地图纵向位置 ${progress}%`);
+  const frameLeft=Math.min(left,width-boxWidth);
+  ctx.fillRect(frameLeft,Math.min(top,height-boxHeight),boxWidth,boxHeight);
+  ctx.strokeRect(frameLeft+.75,Math.min(top,height-boxHeight)+.75,boxWidth-1.5,boxHeight-1.5);
+  const progress=Math.round(Math.max(0,Math.min(1,(-camera.x+view.clientWidth/2)/zoom/worldWidth))*100);
+  const vertical=Math.round(Math.max(0,Math.min(1,(-camera.y+view.clientHeight/2)/zoom/worldHeight))*100);
+  canvas.setAttribute('aria-valuenow',vertical);canvas.setAttribute('aria-valuetext',`地图横向 ${progress}%，纵向 ${vertical}%`);
 }
 function renderVisibleWords() {
   const view=$('#map-viewport');
   if(!view.clientWidth||view.hidden)return;
-  const canvasMode=zoom<CANVAS_ZOOM;
   const visible=wordsInView();
-  const buffered=canvasMode?[]:wordsInView(110);
+  const candidates=zoom<CANVAS_ZOOM?[]:wordsInView(110);
+  const canvasMode=zoom<CANVAS_ZOOM||candidates.length>300;
+  isCanvasMode=canvasMode;
+  const buffered=canvasMode?[]:candidates;
   const desired=new Set(buffered.map(w=>w.id));
   for(const [id,node]of renderedCards) {
     if(desired.has(id)) continue;
@@ -348,9 +375,11 @@ function renderVisibleWords() {
     if(node!==cursor)$('#word-grid').insertBefore(node,cursor);
     cursor=node.nextElementSibling;
   }
-  $('#map-canvas').hidden=!canvasMode;
-  if(canvasMode)drawMapOverview(visible);
-  $('#viewport-summary').textContent=`同一张地图 · 视野内 ${visible.length.toLocaleString()} / ${matchedWords.length.toLocaleString()} 词${zoom<.07?' · 点击地图放大查看':''}`;
+  $('#map-canvas').hidden=false;
+  drawMapOverview(visible,canvasMode);
+  const visibleThemes=[...new Set(visible.map(w=>w.category))].map(id=>themes.find(t=>t.id===id).name);
+  const themeSummary=visibleThemes.length<=2?visibleThemes.join('、'):`${visibleThemes.length} 个主题`;
+  $('#viewport-summary').textContent=`固定 20 列 · ${themeSummary||'主题间留白'} · 视野内 ${visible.length.toLocaleString()} / ${matchedWords.length.toLocaleString()} 词${zoom<.07?' · 点击放大':''}`;
   drawMinimap();
 }
 function applyZoom() {
@@ -390,6 +419,43 @@ $('#zoom-in').addEventListener('click',()=>setZoom(zoom*1.35));
 $('#zoom-slider').addEventListener('input',e=>setZoom(minimumZoom()*Math.pow(MAX_ZOOM/minimumZoom(),Number(e.target.value)/100)));
 $('#zoom-reset').addEventListener('click',()=>{document.body.classList.remove('garden-overview');zoom=1;applyZoom();if(matchedWords.length)centerWord(matchedWords[0]);persist();});
 $('#zoom-fit').addEventListener('click',()=>fitMap());
+const mapPanel = $('#map-panel');
+const fullscreenButton = $('#map-fullscreen');
+// Dialogs stay inside the fullscreen subtree so word details remain usable.
+document.querySelectorAll('dialog').forEach(dialog => mapPanel.append(dialog));
+function syncFullscreen() {
+  const active = document.fullscreenElement === mapPanel || mapPanel.classList.contains('map-fullscreen');
+  document.body.classList.toggle('map-fullscreen-open', active);
+  fullscreenButton.textContent = active ? '⛶ 退出全屏' : '⛶ 全屏';
+  fullscreenButton.setAttribute('aria-pressed', String(active));
+  fullscreenButton.title = active ? '退出全屏（Esc）' : '全屏查看地图';
+  requestAnimationFrame(() => { applyZoom(); if (!active) fullscreenButton.focus({preventScroll:true}); });
+}
+fullscreenButton.addEventListener('click', async () => {
+  fullscreenButton.disabled = true;
+  try {
+    if (document.fullscreenElement === mapPanel) await document.exitFullscreen();
+    else if (mapPanel.classList.contains('map-fullscreen')) {
+      mapPanel.classList.remove('map-fullscreen');
+    } else {
+      try {
+        if (!mapPanel.requestFullscreen || !document.fullscreenEnabled) throw new Error('Fullscreen unavailable');
+        await mapPanel.requestFullscreen();
+      } catch {
+        // Browsers without native fullscreen still offer a full-window map.
+        mapPanel.classList.add('map-fullscreen');
+      }
+    }
+  } catch { toast('暂时无法退出全屏，请按 Esc 重试'); }
+  finally { fullscreenButton.disabled = false; syncFullscreen(); }
+});
+document.addEventListener('fullscreenchange', syncFullscreen);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && mapPanel.classList.contains('map-fullscreen') && !document.querySelector('dialog[open]')) {
+    mapPanel.classList.remove('map-fullscreen'); syncFullscreen();
+  }
+});
+
 const viewport=$('#map-viewport');
 viewport.addEventListener('wheel',e=>{
   const factor=e.deltaMode===1?16:e.deltaMode===2?viewport.clientHeight:1;
@@ -404,7 +470,7 @@ viewport.addEventListener('wheel',e=>{
 },{passive:false});
 // Canvas overviews share exactly the same coordinates and hit testing as DOM cards.
 viewport.addEventListener('click',e=>{
-  if(zoom>=CANVAS_ZOOM||e.target.closest('.map-minimap')||performance.now()<suppressMapClickUntil)return;
+  if(!isCanvasMode||e.target.closest('.map-minimap')||performance.now()<suppressMapClickUntil)return;
   const rect=viewport.getBoundingClientRect(),point={x:e.clientX-rect.left-viewport.clientLeft,y:e.clientY-rect.top-viewport.clientTop};
   const x=(point.x-camera.x)/zoom,y=(point.y-camera.y)/zoom;
   if(zoom<.07 && matchedWords.length) {
@@ -418,8 +484,8 @@ viewport.addEventListener('click',e=>{
     zoom=.7;applyZoom();centerWord(nearest);persist();return;
   }
   const col=Math.floor((x-mapLayout.padding)/(mapLayout.width+mapLayout.gap));
-  const row=Math.floor((y-mapLayout.padding)/(mapLayout.height+mapLayout.gap));
-  const word=col>=0&&col<mapLayout.columns&&row>=0?wordBySlot.get(row*mapLayout.columns+col):null;
+  const row=Math.floor((y-mapLayout.padding-mapLayout.headerHeight)/(mapLayout.height+mapLayout.gap));
+  const word=mapLayout.wordAt(col,row);
   if(word&&matchedSlots.has(word.slot)) {
     const p=positionOf(word);
     if(x<=p.x+mapLayout.width&&y<=p.y+mapLayout.height) {
@@ -441,9 +507,10 @@ minimap.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefau
 minimap.addEventListener('pointermove',e=>{if(minimap.hasPointerCapture(e.pointerId))locateFromMinimap(e);});
 minimap.addEventListener('pointerup',e=>{if(minimap.hasPointerCapture(e.pointerId))minimap.releasePointerCapture(e.pointerId);persist();});
 minimap.addEventListener('keydown',e=>{
-  if(!['ArrowUp','ArrowDown','Home','End'].includes(e.key))return;
+  if(!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
   e.preventDefault();zoom=Math.max(.4,zoom);
-  if(e.key==='Home')camera.y=0;else if(e.key==='End')camera.y=viewport.clientHeight-worldHeight*zoom;
+  if(e.key==='Home'||e.key==='End'){const target=e.key==='Home'?matchedWords[0]:matchedWords.at(-1);if(target)centerWord(target);}
+  else if(e.key==='ArrowLeft'||e.key==='ArrowRight')camera.x+=(e.key==='ArrowLeft'?1:-1)*worldWidth*zoom*.01;
   else camera.y+=(e.key==='ArrowUp'?1:-1)*worldHeight*zoom*.01;
   applyZoom();persist();
 });
@@ -499,7 +566,7 @@ viewport.addEventListener('keydown', e => {
   if (e.target !== viewport) return;
   const directions = {ArrowLeft:[90,0],ArrowRight:[-90,0],ArrowUp:[0,90],ArrowDown:[0,-90]};
   if(directions[e.key]){e.preventDefault();camera.x+=directions[e.key][0];camera.y+=directions[e.key][1];paintCamera();persist();}
-  if(e.key==='Home'||e.key==='End'){e.preventDefault();camera.y=e.key==='Home'?0:viewport.clientHeight-worldHeight*zoom;paintCamera();persist();}
+  if(e.key==='Home'||e.key==='End'){e.preventDefault();const target=e.key==='Home'?matchedWords[0]:matchedWords.at(-1);if(target)centerWord(target);persist();}
   if(e.key==='+'||e.key==='='){e.preventDefault();setZoom(zoom*1.35);}
   if(e.key==='-'){e.preventDefault();setZoom(zoom/1.35);}
 });
@@ -524,7 +591,7 @@ $('#word-form').addEventListener('submit', e => {
   if (!data.word || !data.meaning) {toast('请填写单词和中文释义'); return;}
   if (words.some(w => w.word.toLowerCase() === data.word.toLowerCase())) {toast('这颗单词种子已经在花园里了'); return;}
   const w={...data,id:`custom-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,level:'custom',slot:Math.max(...words.map(w=>w.slot))+1};
-  custom.push(w);words.push(w);wordById.set(w.id,w);wordBySlot.set(w.slot,w);category=filter=studyLevel='all';query='';$('#search').value='';render();zoom=Math.max(.7,zoom);applyZoom();centerWord(w);persist();e.target.reset();$('#add-dialog').close();toast(`「${w.word}」已经种进你的花园`);
+  custom.push(w);words.push(w);wordById.set(w.id,w);mapLayout.add(w,words);category=filter=studyLevel='all';query='';$('#search').value='';render();zoom=Math.max(.7,zoom);applyZoom();centerWord(w);persist();e.target.reset();$('#add-dialog').close();toast(`「${w.word}」已经种进你的花园`);
 });
 function startReview() {
   reviewQueue = words.filter(w => !known.has(w.id) && (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel));
@@ -544,3 +611,4 @@ $('#review-dialog').addEventListener('close', () => { if ('speechSynthesis' in w
 document.addEventListener('keydown', e => {if(e.key === '/' && !['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName) && !document.querySelector('dialog[open]')) { e.preventDefault(); $('#search').focus(); }});
 window.addEventListener('pagehide',persist);
 updateStorageNote(); render(); applyZoom();
+if(layoutMigrated){if(matchedWords.length)centerWord(matchedWords[0]);persist();}

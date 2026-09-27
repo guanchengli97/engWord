@@ -60,3 +60,17 @@
 #map-minimap:focus-visible{outline:2px solid #74905f}
 .map-minimap span{display:block;text-align:center;font-size:8px;color:#8b987b;margin-top:6px;pointer-events:none}
 @media(max-width:650px){.map-context{font-size:9px;flex-wrap:wrap}.map-minimap{right:8px;top:8px;padding:5px}#map-minimap{width:42px;height:130px}.map-minimap span{font-size:7px}}
+
+/* A vertical navigator follows the twenty-column map and stacked themes. */
+#map-minimap{width:72px;height:164px}
+@media(max-width:650px){#map-minimap{width:54px;height:124px}}
+
+/* Keep search, zoom and navigation available while the map fills the screen. */
+#map-panel:fullscreen,#map-panel.map-fullscreen{display:flex;flex-direction:column;width:100%;height:100%;padding:20px;background:var(--page);overflow:auto;box-sizing:border-box}
+#map-panel.map-fullscreen{position:fixed;inset:0;z-index:100;height:100dvh}
+body.map-fullscreen-open{overflow:hidden}
+#map-panel:fullscreen>*,#map-panel.map-fullscreen>*{flex-shrink:0}
+#map-panel:fullscreen #map-viewport,#map-panel.map-fullscreen #map-viewport{flex:1;min-height:120px;height:auto}
+#map-panel:fullscreen .map-toolbar,#map-panel.map-fullscreen .map-toolbar{margin-top:0}
+#map-fullscreen{white-space:nowrap}
+@media(max-width:650px){#map-panel:fullscreen,#map-panel.map-fullscreen{padding:12px;padding-top:max(12px,env(safe-area-inset-top));padding-bottom:max(12px,env(safe-area-inset-bottom))}.map-controls{flex-wrap:wrap}.map-controls .zoom-control{min-width:150px}}
