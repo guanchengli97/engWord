@@ -59,8 +59,31 @@ const {chromium}=require('playwright');const assert=require('node:assert/strict'
  await page.locator('#zoom-fit').click();await frame();assert.ok(await page.evaluate(()=>zoom<.01));assert.equal(await page.locator('#word-grid .word-card').count(),0);assert.ok(await page.locator('#map-canvas').isVisible());
  assert.equal(await page.evaluate(()=>wordsInView().length),10048);assert.equal(await page.locator('#zoom-fit').getAttribute('aria-pressed'),'true');
  await page.screenshot({path:path.join(tmpdir(),'word-garden-continuous-overview.png')});
- // Clicking a tiny word zooms into its real position.
- await page.evaluate(()=>{const w=words.find(w=>w.slot===5000),p=positionOf(w),r=viewport.getBoundingClientRect();viewport.dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:r.left+viewport.clientLeft+(p.x+140)*zoom+camera.x,clientY:r.top+viewport.clientTop+(p.y+105)*zoom+camera.y}));});await frame();assert.ok(await page.evaluate(()=>zoom>=.7));assert.ok(await page.evaluate(()=>wordsInView().some(w=>Math.abs(w.slot-5000)<30)));
+ // Both canvas and DOM thumbnails honor the selected action without moving the map.
+ const clickMapWord=()=>page.evaluate(()=>{const w=words.find(w=>w.slot===5000),p=positionOf(w),r=viewport.getBoundingClientRect();viewport.dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:r.left+viewport.clientLeft+(p.x+140)*zoom+camera.x,clientY:r.top+viewport.clientTop+(p.y+105)*zoom+camera.y}));});
+ await clickMapWord();await frame();assert.ok(await page.locator('#detail-dialog').isVisible());
+ await page.locator('[data-close="detail-dialog"]').click();
+ await page.locator('#small-card-action').selectOption('toggle');
+ const thumbnailView=await page.evaluate(()=>({zoom,...camera}));
+ await clickMapWord();await frame();assert.equal(await page.evaluate(()=>known.size),1);
+ assert.equal(await page.locator('#detail-dialog').isVisible(),false);
+ assert.deepEqual(await page.evaluate(()=>({zoom,...camera})),thumbnailView);
+ await clickMapWord();await frame();assert.equal(await page.evaluate(()=>known.size),0);
+ await page.reload({waitUntil:'domcontentloaded'});await frame();
+ assert.equal(await page.locator('#small-card-action').inputValue(),'toggle');
+ await page.evaluate(()=>{zoom=.4;applyZoom();centerWord(words.find(w=>w.slot===5000));});await frame();
+ const thumbnailId=await page.evaluate(()=>words.find(w=>w.slot===5000).id);
+ const thumbnail=page.locator(`#word-grid [data-detail="${thumbnailId}"]`);
+ await thumbnail.click();await frame();assert.equal(await page.evaluate(()=>known.size),1);
+ await thumbnail.click();await frame();assert.equal(await page.evaluate(()=>known.size),0);
+ await page.evaluate(()=>{suppressMapClickUntil=performance.now()+1000;});
+ await thumbnail.dispatchEvent('click');assert.equal(await page.evaluate(()=>known.size),0);
+ await page.evaluate(()=>{suppressMapClickUntil=0;});
+ await page.locator('#small-card-action').selectOption('detail');
+ await thumbnail.click();assert.ok(await page.locator('#detail-dialog').isVisible());
+ await page.locator('[data-close="detail-dialog"]').click();
+ await page.evaluate(()=>{zoom=.7;applyZoom();centerWord(words.find(w=>w.slot===5000));});await frame();
+ console.log('PASS: tiny canvas and DOM click modes, reversible progress, stable camera, saved preference and drag suppression.');
  // Offscreen nodes unload; a reused in-view cell is not replaced on tiny pans.
  const retained=await page.locator('#word-grid .word-card').first().getAttribute('data-word-id');await page.locator('#word-grid .word-card').first().evaluate(n=>n.dataset.testIdentity='retained');await page.evaluate(()=>{camera.y-=1;paintCamera()});await frame();assert.equal(await page.locator(`[data-word-id="${retained}"]`).getAttribute('data-test-identity'),'retained');
  await page.locator('#map-viewport').focus();await page.keyboard.press('End');await frame();assert.ok(await page.evaluate(()=>wordsInView().some(w=>w.id===matchedWords.at(-1).id)));assert.ok(await page.locator('#word-grid .word-card').count()<=300);

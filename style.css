@@ -74,3 +74,5 @@ body.map-fullscreen-open{overflow:hidden}
 #map-panel:fullscreen .map-toolbar,#map-panel.map-fullscreen .map-toolbar{margin-top:0}
 #map-fullscreen{white-space:nowrap}
 @media(max-width:650px){#map-panel:fullscreen,#map-panel.map-fullscreen{padding:12px;padding-top:max(12px,env(safe-area-inset-top));padding-bottom:max(12px,env(safe-area-inset-bottom))}.map-controls{flex-wrap:wrap}.map-controls .zoom-control{min-width:150px}}
+
+.small-card-control{display:flex;align-items:center;gap:7px;font-size:10px;color:#71825f;white-space:nowrap}.small-card-control select{border:1px solid #dfe3d4;background:#fffef9;color:#56734b;border-radius:6px;padding:8px;font:inherit}.map-controls{flex-wrap:wrap}.small-card-control select:focus-visible{outline:2px solid #90a378;outline-offset:2px}

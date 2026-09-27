@@ -87,6 +87,7 @@ const wordById = new Map(words.map(w => [w.id,w]));
 const known = new Set(Array.isArray(saved.known) ? saved.known.filter(id => wordById.has(id)) : []);
 const levelNames = {all:'全部词库',practical:'生活与职场精选',core:'基础常用',extend:'进阶表达',advanced:'扩展阅读',custom:'我的自定义'};
 let studyLevel = Object.hasOwn(levelNames,saved.studyLevel) ? saved.studyLevel : 'all';
+let smallCardAction = saved.smallCardAction === 'toggle' ? 'toggle' : 'detail';
 let matchedWords = [], matchedSlots = new Set(), searchMatchIndex = 0;
 let matchedBounds = null;
 
@@ -104,7 +105,7 @@ let reviewQueue = [], reviewIndex = 0, reviewedCount = 0, toastTimer;
 const speaker = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4 6 8H3v8h3l5 4V4Z"/><path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>';
 const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3200); }
-function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom,view:camera,layoutPrefix,studyLevel,groupedMap:mapLayout.snapshot()})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
+function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom,view:camera,layoutPrefix,studyLevel,smallCardAction,groupedMap:mapLayout.snapshot()})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
 function updateStorageNote() { if (!storageAvailable) $('.local-note').textContent = '当前进度仅在本次打开时保留'; }
 function renderCategories() { $('#categories').innerHTML = themes.map(t => `<button class="category-button ${category === t.id ? 'active' : ''}" data-category="${t.id}" aria-pressed="${category === t.id}"><span class="category-icon">${t.icon}</span>${t.name}<span class="category-count">${words.filter(w => w.category === t.id).length}</span></button>`).join(''); }
 function card(w) {
@@ -172,7 +173,7 @@ function speak(word) {
   utterance.onerror = e => { if (!['interrupted','canceled'].includes(e.error)) toast('发音暂时不可用，请检查设备是否安装英语语音'); };
   speechSynthesis.speak(utterance);
 }
-function toggle(id) { if (known.has(id)) known.delete(id); else known.add(id); persist(); render(); const replacement = [...document.querySelectorAll('[data-toggle]')].find(b => b.dataset.toggle === id); replacement?.focus({preventScroll:true}); }
+function toggle(id, restoreFocus = true) { if (known.has(id)) known.delete(id); else known.add(id); persist(); render(); const replacement = [...document.querySelectorAll('[data-toggle]')].find(b => b.dataset.toggle === id); if (restoreFocus) replacement?.focus({preventScroll:true}); }
 function handleWordClick(e) {
   if (e.currentTarget.id === 'word-grid' && performance.now() < suppressMapClickUntil) return;
   const sound = e.target.closest('[data-speak]'), status = e.target.closest('[data-toggle]');
@@ -183,8 +184,20 @@ function handleWordClick(e) {
     return;
   }
   const detail = e.target.closest('[data-detail]'), wordCard = e.target.closest('[data-word-id]');
-  if (detail || wordCard) openDetail(detail ? detail.dataset.detail : wordCard.dataset.wordId);
+  if (detail || wordCard) {
+    const id = detail ? detail.dataset.detail : wordCard.dataset.wordId;
+    if (e.currentTarget.id === 'word-grid' && zoom <= .65) activateSmallCard(id);
+    else openDetail(id);
+  }
 }
+function activateSmallCard(id) {
+  if (smallCardAction === 'toggle') toggle(id, false);
+  else openDetail(id);
+}
+$('#small-card-action').value = smallCardAction;
+$('#small-card-action').addEventListener('change', e => {
+  smallCardAction = e.target.value; persist(); applyZoom();
+});
 function renderDetail(id) {
   const w=wordById.get(id);
   $('#detail-content').innerHTML = card(w) + `<div class="word-notes">${w.exampleZh?`<p>${escapeHTML(w.exampleZh)}</p>`:''}<p>${escapeHTML(w.ipaNote||'点击喇叭播放美式发音')}</p><p>${escapeHTML(levelNames[w.level]||'自定义词条')} · ${w.source==='ecdict'?'<a href="https://github.com/skywind3000/ECDICT" target="_blank" rel="noopener">ECDICT 词典释义</a>':'自编学习内容'}</p></div>`;
@@ -375,17 +388,23 @@ function renderVisibleWords() {
     if(node!==cursor)$('#word-grid').insertBefore(node,cursor);
     cursor=node.nextElementSibling;
   }
+  for (const [id,node] of renderedCards) {
+    const button=node.querySelector('[data-detail]'),word=wordById.get(id);
+    const action=zoom<=.65&&smallCardAction==='toggle'?'切换已会状态':'查看详情';
+    button.setAttribute('aria-label',`${word.word} · ${action}`);
+    button.title=`${word.word} · 点击${action}`;
+  }
   $('#map-canvas').hidden=false;
   drawMapOverview(visible,canvasMode);
   const visibleThemes=[...new Set(visible.map(w=>w.category))].map(id=>themes.find(t=>t.id===id).name);
   const themeSummary=visibleThemes.length<=2?visibleThemes.join('、'):`${visibleThemes.length} 个主题`;
-  $('#viewport-summary').textContent=`固定 20 列 · ${themeSummary||'主题间留白'} · 视野内 ${visible.length.toLocaleString()} / ${matchedWords.length.toLocaleString()} 词${zoom<.07?' · 点击放大':''}`;
+  $('#viewport-summary').textContent=`固定 20 列 · ${themeSummary||'主题间留白'} · 视野内 ${visible.length.toLocaleString()} / ${matchedWords.length.toLocaleString()} 词${zoom<=.65?' · 点击'+(smallCardAction==='toggle'?'切换已会':'查看详情'):''}`;
   drawMinimap();
 }
 function applyZoom() {
   const grid=$('#word-grid');
   grid.dataset.density=zoom<=.4?'overview':zoom<=.65?'compact':zoom<.9?'standard':'detail';
-  $('#status-hint').textContent=zoom<.7?'点击单词，在详情中标记进步':'点击卡片右下角，标记你的进步';
+  $('#status-hint').textContent=zoom<=.65?(smallCardAction==='toggle'?'点击小卡片，切换已会 / 未会':'点击小卡片，查看单词详情'):'点击卡片右下角，标记你的进步';
   grid.style.setProperty('--map-title-size',`${Math.max(25,11/zoom)}px`);
   grid.style.setProperty('--map-label-size',`${Math.max(12,10/zoom)}px`);
   $('#zoom-value').value=formatZoom(zoom);
@@ -481,7 +500,12 @@ viewport.addEventListener('click',e=>{
       const p=positionOf(candidate),d=(p.x+mapLayout.width/2-targetX)**2+(p.y+mapLayout.height/2-targetY)**2;
       if(d<distance){nearest=candidate;distance=d;}
     }
-    zoom=.7;applyZoom();centerWord(nearest);persist();return;
+    // Ignore empty space; tiny rendered cells get a small pointer tolerance.
+    const p=positionOf(nearest);
+    const dx=Math.max(p.x-x,0,x-p.x-mapLayout.width)*zoom;
+    const dy=Math.max(p.y-y,0,y-p.y-mapLayout.height)*zoom;
+    if(Math.hypot(dx,dy)<=2) activateSmallCard(nearest.id);
+    return;
   }
   const col=Math.floor((x-mapLayout.padding)/(mapLayout.width+mapLayout.gap));
   const row=Math.floor((y-mapLayout.padding-mapLayout.headerHeight)/(mapLayout.height+mapLayout.gap));
@@ -489,11 +513,10 @@ viewport.addEventListener('click',e=>{
   if(word&&matchedSlots.has(word.slot)) {
     const p=positionOf(word);
     if(x<=p.x+mapLayout.width&&y<=p.y+mapLayout.height) {
-      if(zoom<.07){zoom=.7;applyZoom();centerWord(word);persist();}else openDetail(word.id);
+      activateSmallCard(word.id);
       return;
     }
   }
-  setZoom(zoom*2,point);
 });
 const minimap=$('#map-minimap');
 function locateFromMinimap(e) {
