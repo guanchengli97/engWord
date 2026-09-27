@@ -87,10 +87,14 @@ const wordById = new Map(words.map(w => [w.id,w]));
 const known = new Set(Array.isArray(saved.known) ? saved.known.filter(id => wordById.has(id)) : []);
 const levelNames = {all:'全部词库',practical:'生活与职场精选',core:'基础常用',extend:'进阶表达',advanced:'扩展阅读',custom:'我的自定义'};
 let studyLevel = Object.hasOwn(levelNames,saved.studyLevel) ? saved.studyLevel : 'all';
-let activeRegion = Number.isInteger(saved.studyRegion) ? saved.studyRegion : 0;
-let matchedWords = [], activeWords = [], regionIds = [];
-const REGION_SIZE = 60;
-let category = 'all', filter = 'all', query = '', zoom = Number.isFinite(saved.zoom) ? Math.min(1.5, Math.max(.1, saved.zoom)) : 1;
+let matchedWords = [], matchedSlots = new Set(), searchMatchIndex = 0;
+let matchedBounds = null;
+const wordBySlot = new Map(words.map(w => [w.slot,w]));
+const renderedCards = new Map();
+const MAX_ZOOM = 1.5, CANVAS_ZOOM = .14;
+let mapFrame = 0, saveViewTimer;
+let miniBase = null, miniDirty = true;
+let category = 'all', filter = 'all', query = '', zoom = Number.isFinite(saved.zoom) ? Math.min(1.5, Math.max(.00001, saved.zoom)) : 1;
 const mapLayout = {columns:6,width:280,height:210,gap:20,padding:24};
 const positionOf = w => ({x:mapLayout.padding + w.slot%mapLayout.columns*(mapLayout.width+mapLayout.gap), y:mapLayout.padding + Math.floor(w.slot/mapLayout.columns)*(mapLayout.height+mapLayout.gap)});
 const camera = { x: Number.isFinite(saved.view?.x) ? saved.view.x : 0, y: Number.isFinite(saved.view?.y) ? saved.view.y : 0 };
@@ -99,26 +103,27 @@ let reviewQueue = [], reviewIndex = 0, reviewedCount = 0, toastTimer;
 const speaker = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4 6 8H3v8h3l5 4V4Z"/><path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>';
 const escapeHTML = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(message) { $('#toast').textContent = message; $('#toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').classList.remove('visible'), 3200); }
-function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom,view:camera,layoutPrefix,studyLevel,studyRegion:activeRegion})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
+function persist() { try { localStorage.setItem(storageKey, JSON.stringify({known:[...known],custom,zoom,view:camera,layoutPrefix,studyLevel})); } catch { storageAvailable = false; toast('浏览器未允许保存，当前进度仅在本次打开时保留'); } updateStorageNote(); }
 function updateStorageNote() { if (!storageAvailable) $('.local-note').textContent = '当前进度仅在本次打开时保留'; }
 function renderCategories() { $('#categories').innerHTML = themes.map(t => `<button class="category-button ${category === t.id ? 'active' : ''}" data-category="${t.id}" aria-pressed="${category === t.id}"><span class="category-icon">${t.icon}</span>${t.name}<span class="category-count">${words.filter(w => w.category === t.id).length}</span></button>`).join(''); }
 function card(w) {
   const isKnown = known.has(w.id), theme = themes.find(t => t.id === w.category);
   return `<article data-word-id="${escapeHTML(w.id)}" class="word-card ${isKnown?'known':''}"><div class="card-top"><h3 class="word-name" lang="en"><button class="word-detail-button" data-detail="${escapeHTML(w.id)}" aria-label="查看 ${escapeHTML(w.word)} 的详细内容" title="${escapeHTML(w.word)} · 点击查看详情">${escapeHTML(w.word)}</button></h3><button class="audio-button" data-speak="${escapeHTML(w.id)}" aria-label="播放 ${escapeHTML(w.word)} 的美式发音">${speaker}</button></div><div class="ipa">${escapeHTML(w.ipa || (w.level === 'practical' ? '点击喇叭，跟读整句' : '音标待补充'))}</div><p class="meaning"><span>${escapeHTML(w.pos)}</span>${escapeHTML(w.meaning)}</p><p class="example" ${w.example ? 'lang="en"' : ''}>${escapeHTML(w.example) || '此词暂未收录例句'}</p><div class="card-bottom"><span class="category-tag"><span>${theme.icon}</span>${theme.name}</span><button class="status-button" data-toggle="${escapeHTML(w.id)}" aria-pressed="${isKnown}" aria-label="${escapeHTML(w.word)}：${isKnown?'已记住，点击标记为还没记住':'还没记住，点击标记为已记住'}"><span>${isKnown?'✓':'○'}</span>${isKnown?'已记住':'还没记住'}</button></div></article>`;
 }
-function renderRegions() {
-  const select = $('#map-region');
-  select.innerHTML = regionIds.map(id => {
-    const first = matchedWords.find(w => Math.floor(w.slot/REGION_SIZE)===id);
-    return `<option value="${id}">词区 ${String(id+1).padStart(3,'0')} · ${escapeHTML(first.word)}</option>`;
-  }).join('');
-  select.value = activeRegion;
-  select.disabled = !regionIds.length;
-  const index = regionIds.indexOf(activeRegion);
-  $('#region-prev').disabled = index <= 0;
-  $('#region-next').disabled = index < 0 || index >= regionIds.length-1;
-  $('#region-summary').textContent = regionIds.length ? `本区 ${activeWords.length} 词 · 第 ${index+1} / ${regionIds.length} 个匹配词区` : '没有匹配的词区';
+function updateSearchNavigation() {
+  $('#search-navigation').hidden = !query || !matchedWords.length;
+  $('#match-position').textContent = `${searchMatchIndex+1} / ${matchedWords.length.toLocaleString()}`;
+  $('#match-prev').disabled = searchMatchIndex<=0;
+  $('#match-next').disabled = searchMatchIndex>=matchedWords.length-1;
 }
+function moveToMatch(offset) {
+  searchMatchIndex = Math.max(0,Math.min(matchedWords.length-1,searchMatchIndex+offset));
+  const word = matchedWords[searchMatchIndex];
+  if(word) {zoom=Math.max(.7,zoom);applyZoom();centerWord(word);persist();}
+  updateSearchNavigation();
+}
+$('#match-prev').addEventListener('click',()=>moveToMatch(-1));
+$('#match-next').addEventListener('click',()=>moveToMatch(1));
 function render(focusResults = false) {
   renderCategories();
   const total = words.length, count = known.size, progress = total ? Math.round(count / total * 100) : 0;
@@ -135,20 +140,20 @@ function render(focusResults = false) {
   $('#collection-title').innerHTML = `${selectedTheme ? selectedTheme.name : '我的单词花园'} <span id="collection-count"></span>`;
   $('#collection-description').textContent = selectedTheme ? selectedTheme.description : '词汇、短语和真实场景表达，一点点融入工作与生活。';
   matchedWords = words.filter(w => (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel) && (filter==='all'||known.has(w.id)===(filter==='known')) && (!query||`${w.word} ${w.meaning} ${w.example} ${w.exampleZh||''}`.toLowerCase().includes(query)));
-  regionIds = [...new Set(matchedWords.map(w => Math.floor(w.slot/REGION_SIZE)))];
-  const previousRegion=activeRegion;
-  if (focusResults || !regionIds.includes(activeRegion)) activeRegion = regionIds[0] ?? 0;
-  activeWords = matchedWords.filter(w => Math.floor(w.slot/REGION_SIZE)===activeRegion);
-  $('#collection-count').textContent = matchedWords.length.toLocaleString();
-  $('#result-caption').textContent = `${selectedTheme?selectedTheme.name:'全部主题'} · ${levelNames[studyLevel]} · 匹配 ${matchedWords.length.toLocaleString()} 词`;
-  $('#word-grid').innerHTML = activeWords.map(w => {
-    const {x,y} = positionOf(w);
-    return card(w).replace('<article ', `<article style="left:${x}px;top:${y}px" `);
-  }).join('');
-  $('#empty-state').hidden = matchedWords.length>0;
-  $('#map-viewport').hidden = matchedWords.length===0;
-  renderRegions(); updateMapSize();
-  if ((focusResults || previousRegion!==activeRegion) && activeWords.length) centerWord(activeWords[0]);
+  matchedSlots = new Set(matchedWords.map(w=>w.slot));
+  matchedBounds = boundsOf(matchedWords);
+  if(focusResults) searchMatchIndex=0;
+  searchMatchIndex=Math.min(searchMatchIndex,Math.max(0,matchedWords.length-1));
+  $('#collection-count').textContent=matchedWords.length.toLocaleString();
+  $('#result-caption').textContent=`${selectedTheme?selectedTheme.name:'全部主题'} · ${levelNames[studyLevel]} · 匹配 ${matchedWords.length.toLocaleString()} 词`;
+  $('#empty-state').hidden=matchedWords.length>0;
+  $('#map-viewport').hidden=matchedWords.length===0;
+  $('#word-grid').replaceChildren(); renderedCards.clear(); miniDirty=true;
+  updateSearchNavigation(); updateMapSize();
+  if(focusResults && matchedWords.length) {
+    zoom=Math.max(.4,zoom);applyZoom();centerWord(matchedWords[0]);
+  }
+  renderVisibleWords();
   document.querySelectorAll('[data-filter]').forEach(b=>{const selected=b.dataset.filter===filter;b.classList.toggle('selected',selected);b.setAttribute('aria-pressed',selected);});
   $('#all-nav').classList.toggle('active',category==='all'&&filter==='all');
 }
@@ -158,13 +163,7 @@ function centerWord(w) {
   camera.y=$('#map-viewport').clientHeight/2-(y+mapLayout.height/2)*zoom;
   paintCamera();
 }
-function changeRegion(id) {
-  activeRegion=Number(id); render(); fitMap(false); persist();
-}
-$('#map-region').addEventListener('change',e=>changeRegion(e.target.value));
-$('#region-prev').addEventListener('click',()=>{const index=regionIds.indexOf(activeRegion);if(index>0)changeRegion(regionIds[index-1]);});
-$('#region-next').addEventListener('click',()=>{const index=regionIds.indexOf(activeRegion);if(index<regionIds.length-1)changeRegion(regionIds[index+1]);});
-$('#study-level').addEventListener('change',e=>{studyLevel=e.target.value;render(true);fitMap(false);persist();});
+$('#study-level').addEventListener('change',e=>{studyLevel=e.target.value;render(true);persist();});
 function speak(word) {
   if (!('speechSynthesis' in window)) { toast('当前浏览器不支持语音朗读，请使用 Chrome、Edge 或 Safari'); return; }
   speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(word); utterance.lang = 'en-US'; utterance.rate = .85;
@@ -198,7 +197,7 @@ $('#word-grid').addEventListener('click', handleWordClick);
 $('#detail-content').addEventListener('click', handleWordClick);
 $('#detail-dialog').addEventListener('close', () => {
   const origin = [...document.querySelectorAll('#word-grid [data-detail]')].find(b => b.dataset.detail === detailOrigin);
-  origin?.focus({preventScroll:true});
+  (origin||$('#map-viewport')).focus({preventScroll:true});
   if ('speechSynthesis' in window) speechSynthesis.cancel();
 });
 $('#categories').addEventListener('click', e => {const b = e.target.closest('[data-category]'); if (b) {category = category === b.dataset.category ? 'all' : b.dataset.category; render(true);}});
@@ -206,94 +205,258 @@ $('.status-tabs').addEventListener('click', e => {const b = e.target.closest('[d
 $('#search').addEventListener('input', e => {query = e.target.value.trim().toLowerCase(); render(true);});
 function resetFilters() { category=filter=studyLevel='all'; query=''; $('#search').value=''; render(true); }
 $('#all-nav').addEventListener('click', resetFilters); $('#clear-filters').addEventListener('click', resetFilters);
+function boundsOf(list) {
+  if(!list.length) return null;
+  let left=Infinity,top=Infinity,right=0,bottom=0;
+  for(const word of list) {
+    const {x,y}=positionOf(word);
+    left=Math.min(left,x);top=Math.min(top,y);
+    right=Math.max(right,x+mapLayout.width);bottom=Math.max(bottom,y+mapLayout.height);
+  }
+  return {left:left-mapLayout.padding,top:top-mapLayout.padding,width:right-left+2*mapLayout.padding,height:bottom-top+2*mapLayout.padding};
+}
 function updateMapSize() {
-  const {columns, width, height, gap, padding} = mapLayout;
-  const rows = Math.max(1, Math.ceil((Math.max(...words.map(w=>w.slot))+1) / columns));
-  worldWidth = padding * 2 + columns * width + (columns - 1) * gap;
-  worldHeight = padding * 2 + rows * height + (rows - 1) * gap;
-  $('#word-grid').style.width = `${worldWidth}px`;
-  $('#word-grid').style.height = `${worldHeight}px`;
+  const {columns,width,height,gap,padding}=mapLayout;
+  const maxSlot=words.reduce((max,w)=>Math.max(max,w.slot),0);
+  worldWidth=padding*2+columns*width+(columns-1)*gap;
+  worldHeight=padding*2+Math.ceil((maxSlot+1)/columns)*(height+gap)-gap;
+  $('#word-grid').style.width=`${worldWidth}px`;
+  $('#word-grid').style.height=`${worldHeight}px`;
   paintCamera();
 }
+function minimumZoom() {
+  const view=$('#map-viewport');
+  return Math.max(.00001,Math.min(.1,view.clientWidth/(worldWidth||1),view.clientHeight/(worldHeight||1))*.8);
+}
+function formatZoom(value) {
+  const percent=value*100;
+  return `${percent<1?percent.toFixed(2):percent<10?percent.toFixed(1):Math.round(percent)}%`;
+}
+function saveViewSoon() {clearTimeout(saveViewTimer);saveViewTimer=setTimeout(persist,180);}
 function paintCamera() {
-  const viewport = $('#map-viewport');
-  if (!viewport.clientWidth || !worldWidth) return;
-  const firstRow = activeRegion * REGION_SIZE / mapLayout.columns;
-  const top = firstRow * (mapLayout.height + mapLayout.gap);
-  const regionHeight = Math.min(worldHeight-top, REGION_SIZE/mapLayout.columns*(mapLayout.height+mapLayout.gap)+mapLayout.padding*2-mapLayout.gap);
-  const clampAxis = (value, available, origin, extent) => extent<=available ? (available-extent)/2-origin : Math.max(available-origin-extent,Math.min(-origin,value));
-  camera.x=clampAxis(camera.x,viewport.clientWidth,0,worldWidth*zoom);
-  camera.y=clampAxis(camera.y,viewport.clientHeight,top*zoom,regionHeight*zoom);
-  $('#word-grid').style.transform=`translate(${camera.x}px, ${camera.y}px) scale(${zoom})`;
-  const fits=activeWords.length>0 && activeWords.map(positionOf).every(p=>p.x*zoom+camera.x>=-1&&p.y*zoom+camera.y>=-1&&(p.x+mapLayout.width)*zoom+camera.x<=viewport.clientWidth+1&&(p.y+mapLayout.height)*zoom+camera.y<=viewport.clientHeight+1);
+  const viewport=$('#map-viewport');
+  if(!viewport.clientWidth||!worldWidth) return;
+  const clamp=(value,available,extent)=>extent<=available?(available-extent)/2:Math.max(available-extent,Math.min(0,value));
+  camera.x=clamp(camera.x,viewport.clientWidth,worldWidth*zoom);
+  camera.y=clamp(camera.y,viewport.clientHeight,worldHeight*zoom);
+  $('#word-grid').style.transform=`translate(${camera.x}px,${camera.y}px) scale(${zoom})`;
+  const b=matchedBounds;
+  const fits=!!b&&b.left*zoom+camera.x>=-1&&b.top*zoom+camera.y>=-1&&(b.left+b.width)*zoom+camera.x<=viewport.clientWidth+1&&(b.top+b.height)*zoom+camera.y<=viewport.clientHeight+1;
   $('#zoom-fit').setAttribute('aria-pressed',fits);
+  if(!mapFrame) mapFrame=requestAnimationFrame(()=>{mapFrame=0;renderVisibleWords();});
+}
+// Slots provide a spatial index: visit only rows and columns intersecting the camera.
+function wordsInView(overscan=0) {
+  const view=$('#map-viewport'),result=[];
+  const left=(-camera.x-overscan)/zoom,top=(-camera.y-overscan)/zoom;
+  const right=(view.clientWidth-camera.x+overscan)/zoom,bottom=(view.clientHeight-camera.y+overscan)/zoom;
+  const pitchX=mapLayout.width+mapLayout.gap,pitchY=mapLayout.height+mapLayout.gap;
+  const firstColumn=Math.max(0,Math.floor((left-mapLayout.padding-mapLayout.width)/pitchX));
+  const lastColumn=Math.min(mapLayout.columns-1,Math.floor((right-mapLayout.padding)/pitchX));
+  const firstRow=Math.max(0,Math.floor((top-mapLayout.padding-mapLayout.height)/pitchY));
+  const lastRow=Math.min(Math.ceil(worldHeight/pitchY)-1,Math.floor((bottom-mapLayout.padding)/pitchY));
+  for(let row=firstRow;row<=lastRow;row++) for(let col=firstColumn;col<=lastColumn;col++) {
+    const slot=row*mapLayout.columns+col;
+    if(!matchedSlots.has(slot)) continue;
+    const word=wordBySlot.get(slot),p=positionOf(word);
+    if(p.x+mapLayout.width>=left&&p.x<=right&&p.y+mapLayout.height>=top&&p.y<=bottom) result.push(word);
+  }
+  return result;
+}
+function prepareCanvas(canvas,width,height) {
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  if(canvas.width!==Math.round(width*dpr)||canvas.height!==Math.round(height*dpr)) {
+    canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);
+  }
+  const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,width,height);
+  return ctx;
+}
+function drawMapOverview(visible) {
+  const view=$('#map-viewport'),canvas=$('#map-canvas');
+  const ctx=prepareCanvas(canvas,view.clientWidth,view.clientHeight);
+  // Two passes retain visible green progress even when several rows share a pixel.
+  for(const remembered of [false,true]) {
+    ctx.fillStyle=remembered?'#9eb786':'#dcbfae';
+    for(const word of visible) {
+      if(known.has(word.id)!==remembered) continue;
+      const p=positionOf(word),x=p.x*zoom+camera.x,y=p.y*zoom+camera.y;
+      ctx.fillRect(x,y,Math.max(1,mapLayout.width*zoom),Math.max(.7,mapLayout.height*zoom));
+    }
+  }
+  if(zoom>=.07) {
+    ctx.font='11px "DM Sans", sans-serif';ctx.fillStyle='#43583c';
+    for(const word of visible) {
+      const p=positionOf(word),x=p.x*zoom+camera.x,y=p.y*zoom+camera.y;
+      ctx.save();ctx.beginPath();ctx.rect(x+2,y,mapLayout.width*zoom-4,mapLayout.height*zoom);ctx.clip();
+      ctx.fillText(word.word,x+3,y+mapLayout.height*zoom/2+4);ctx.restore();
+    }
+  }
+}
+function drawMinimap() {
+  const canvas=$('#map-minimap'),width=54,height=164;
+  if(miniDirty||!miniBase) {
+    miniBase=document.createElement('canvas');miniBase.width=width;miniBase.height=height;
+    const base=miniBase.getContext('2d');base.fillStyle='#f5f6ed';base.fillRect(0,0,width,height);
+    for(const remembered of [false,true]) {
+      base.fillStyle=remembered?'#78985e':'#dcbfae';
+      for(const word of matchedWords) {
+        if(known.has(word.id)!==remembered)continue;
+        const p=positionOf(word);
+        base.fillRect(p.x/worldWidth*width,p.y/worldHeight*height,Math.max(1,mapLayout.width/worldWidth*width),Math.max(.7,mapLayout.height/worldHeight*height));
+      }
+    }
+    miniDirty=false;
+  }
+  const ctx=prepareCanvas(canvas,width,height);ctx.drawImage(miniBase,0,0);
+  const view=$('#map-viewport');
+  const top=Math.max(0,-camera.y/zoom/worldHeight*height);
+  const left=Math.max(0,-camera.x/zoom/worldWidth*width);
+  const boxHeight=Math.min(height,Math.max(5,view.clientHeight/zoom/worldHeight*height));
+  const boxWidth=Math.min(width,Math.max(5,view.clientWidth/zoom/worldWidth*width));
+  ctx.fillStyle='#5a774a22';ctx.strokeStyle='#526e43';ctx.lineWidth=1.5;
+  ctx.fillRect(left,Math.min(top,height-boxHeight),boxWidth,boxHeight);
+  ctx.strokeRect(left+.75,Math.min(top,height-boxHeight)+.75,boxWidth-1.5,boxHeight-1.5);
+  const progress=Math.round(Math.max(0,Math.min(1,(-camera.y+view.clientHeight/2)/zoom/worldHeight))*100);
+  canvas.setAttribute('aria-valuenow',progress);canvas.setAttribute('aria-valuetext',`地图纵向位置 ${progress}%`);
+}
+function renderVisibleWords() {
+  const view=$('#map-viewport');
+  if(!view.clientWidth||view.hidden)return;
+  const canvasMode=zoom<CANVAS_ZOOM;
+  const visible=wordsInView();
+  const buffered=canvasMode?[]:wordsInView(110);
+  const desired=new Set(buffered.map(w=>w.id));
+  for(const [id,node]of renderedCards) {
+    if(desired.has(id)) continue;
+    if(node.contains(document.activeElement)&&!document.querySelector('dialog[open]'))view.focus({preventScroll:true});
+    node.remove();renderedCards.delete(id);
+  }
+  // Reuse cells that remain in view, preserving focus and avoiding pointer-event churn.
+  const fragment=document.createDocumentFragment();
+  for(const word of buffered) {
+    if(renderedCards.has(word.id))continue;
+    const template=document.createElement('template');template.innerHTML=card(word);
+    const node=template.content.firstElementChild,p=positionOf(word);
+    node.style.left=`${p.x}px`;node.style.top=`${p.y}px`;
+    fragment.append(node);renderedCards.set(word.id,node);
+  }
+  $('#word-grid').append(fragment);
+  // DOM order follows map order even when panning upward, for keyboard navigation.
+  let cursor=$('#word-grid').firstElementChild;
+  for(const word of buffered) {
+    const node=renderedCards.get(word.id);
+    if(node!==cursor)$('#word-grid').insertBefore(node,cursor);
+    cursor=node.nextElementSibling;
+  }
+  $('#map-canvas').hidden=!canvasMode;
+  if(canvasMode)drawMapOverview(visible);
+  $('#viewport-summary').textContent=`同一张地图 · 视野内 ${visible.length.toLocaleString()} / ${matchedWords.length.toLocaleString()} 词${zoom<.07?' · 点击地图放大查看':''}`;
+  drawMinimap();
 }
 function applyZoom() {
-  const grid = $('#word-grid');
-  const mode = zoom <= .4 ? 'overview' : zoom <= .65 ? 'compact' : zoom < .9 ? 'standard' : 'detail';
-  grid.dataset.density = mode;
-  $('#status-hint').textContent = ['overview','compact'].includes(mode) ? '点击单词，在详情中标记进步' : '点击卡片右下角，标记你的进步';
-  // Compensate text size at overview levels, without changing any card coordinates.
-  grid.style.setProperty('--map-title-size', `${Math.max(25, 11 / zoom)}px`);
-  grid.style.setProperty('--map-label-size', `${Math.max(12, 10 / zoom)}px`);
-  $('#zoom-value').value = `${Math.round(zoom*100)}%`;
-  $('#zoom-slider').value = Math.round(zoom*100);
-  $('#zoom-out').disabled = zoom <= .1;
-  $('#zoom-in').disabled = zoom >= 1.5;
-  $('#zoom-mode').textContent = {overview:'固定地图 · 全览', compact:'固定地图 · 词义', standard:'固定地图 · 发音', detail:'固定地图 · 详情'}[mode];
-  $('#zoom-slider').setAttribute('aria-valuetext', `${Math.round(zoom*100)}%，${$('#zoom-mode').textContent}`);
+  const grid=$('#word-grid');
+  grid.dataset.density=zoom<=.4?'overview':zoom<=.65?'compact':zoom<.9?'standard':'detail';
+  $('#status-hint').textContent=zoom<.7?'点击单词，在详情中标记进步':'点击卡片右下角，标记你的进步';
+  grid.style.setProperty('--map-title-size',`${Math.max(25,11/zoom)}px`);
+  grid.style.setProperty('--map-label-size',`${Math.max(12,10/zoom)}px`);
+  $('#zoom-value').value=formatZoom(zoom);
+  const minimum=minimumZoom();
+  $('#zoom-slider').value=Math.max(0,Math.min(100,Math.log(zoom/minimum)/Math.log(MAX_ZOOM/minimum)*100));
+  $('#zoom-out').disabled=zoom<=minimum+1e-9;$('#zoom-in').disabled=zoom>=MAX_ZOOM;
+  $('#zoom-mode').textContent=zoom<.07?'连续地图 · 全图概览':zoom<=.4?'连续地图 · 单词全览':zoom<=.65?'连续地图 · 词义':zoom<.9?'连续地图 · 发音':'连续地图 · 详情';
+  $('#zoom-slider').setAttribute('aria-valuetext',`${formatZoom(zoom)}，${$('#zoom-mode').textContent}`);
   paintCamera();
 }
-function setZoom(value, anchor) {
-  const viewport = $('#map-viewport');
-  const point = anchor || {x:viewport.clientWidth/2, y:viewport.clientHeight/2};
-  const worldPoint = {x:(point.x-camera.x)/zoom, y:(point.y-camera.y)/zoom};
-  zoom = Math.max(.1, Math.min(1.5, Math.round(value*1000)/1000));
-  camera.x = point.x - worldPoint.x*zoom;
-  camera.y = point.y - worldPoint.y*zoom;
-  applyZoom(); persist();
+function setZoom(value,anchor) {
+  const view=$('#map-viewport');
+  const point=anchor||{x:view.clientWidth/2,y:view.clientHeight/2};
+  const worldPoint={x:(point.x-camera.x)/zoom,y:(point.y-camera.y)/zoom};
+  zoom=Math.max(minimumZoom(),Math.min(MAX_ZOOM,value));
+  camera.x=point.x-worldPoint.x*zoom;camera.y=point.y-worldPoint.y*zoom;
+  applyZoom();saveViewSoon();
 }
-function fitMap(scrollToMap = true) {
-  if (!activeWords.length) return;
-  if (scrollToMap) document.body.classList.add('garden-overview');
-  const viewport=$('#map-viewport');
-  const points=activeWords.map(positionOf);
-  const left=Math.min(...points.map(p=>p.x))-mapLayout.padding;
-  const top=Math.min(...points.map(p=>p.y))-mapLayout.padding;
-  const width=Math.max(...points.map(p=>p.x))+mapLayout.width+mapLayout.padding-left;
-  const height=Math.max(...points.map(p=>p.y))+mapLayout.height+mapLayout.padding-top;
-  zoom=Math.max(.1,Math.min(1,viewport.clientWidth/width,viewport.clientHeight/height));
-  camera.x=(viewport.clientWidth-width*zoom)/2-left*zoom;
-  camera.y=(viewport.clientHeight-height*zoom)/2-top*zoom;
-  applyZoom(); persist();
-  if(scrollToMap) $('.map-toolbar').scrollIntoView({block:'start'});
+function fitMap(scrollToMap=true) {
+  if(!matchedBounds)return;
+  if(scrollToMap)document.body.classList.add('garden-overview');
+  const view=$('#map-viewport'),b=matchedBounds;
+  zoom=Math.max(minimumZoom(),Math.min(1,view.clientWidth/b.width,view.clientHeight/b.height));
+  camera.x=(view.clientWidth-b.width*zoom)/2-b.left*zoom;
+  camera.y=(view.clientHeight-b.height*zoom)/2-b.top*zoom;
+  applyZoom();persist();
+  if(scrollToMap)$('.map-toolbar').scrollIntoView({block:'start'});
 }
-$('#zoom-out').addEventListener('click', () => setZoom(zoom-.1));
-$('#zoom-in').addEventListener('click', () => setZoom(zoom+.1));
-$('#zoom-slider').addEventListener('input', e => setZoom(Number(e.target.value)/100));
-$('#zoom-reset').addEventListener('click', () => {
-  document.body.classList.remove('garden-overview');
-  zoom=1; applyZoom(); if(activeWords.length) centerWord(activeWords[0]); persist();
-});
+$('#zoom-out').addEventListener('click',()=>setZoom(zoom/1.35));
+$('#zoom-in').addEventListener('click',()=>setZoom(zoom*1.35));
+$('#zoom-slider').addEventListener('input',e=>setZoom(minimumZoom()*Math.pow(MAX_ZOOM/minimumZoom(),Number(e.target.value)/100)));
+$('#zoom-reset').addEventListener('click',()=>{document.body.classList.remove('garden-overview');zoom=1;applyZoom();if(matchedWords.length)centerWord(matchedWords[0]);persist();});
 $('#zoom-fit').addEventListener('click',()=>fitMap());
-const viewport = $('#map-viewport');
-viewport.addEventListener('wheel', e => {
-  if (!e.ctrlKey && !e.metaKey) return;
-  e.preventDefault();
-  const rect = viewport.getBoundingClientRect();
-  const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? viewport.clientHeight : 1);
-  setZoom(zoom * Math.exp(-Math.max(-100, Math.min(100, delta))*.005), {x:e.clientX-rect.left, y:e.clientY-rect.top});
-}, {passive:false});
+const viewport=$('#map-viewport');
+viewport.addEventListener('wheel',e=>{
+  const factor=e.deltaMode===1?16:e.deltaMode===2?viewport.clientHeight:1;
+  if(e.ctrlKey||e.metaKey) {
+    e.preventDefault();const rect=viewport.getBoundingClientRect();
+    setZoom(zoom*Math.exp(-Math.max(-100,Math.min(100,e.deltaY*factor))*.005),{x:e.clientX-rect.left-viewport.clientLeft,y:e.clientY-rect.top-viewport.clientTop});
+  } else {
+    const oldX=camera.x,oldY=camera.y;
+    camera.x-=(e.shiftKey?e.deltaY:e.deltaX)*factor;camera.y-=(e.shiftKey?0:e.deltaY)*factor;
+    paintCamera();if(oldX!==camera.x||oldY!==camera.y)e.preventDefault();saveViewSoon();
+  }
+},{passive:false});
+// Canvas overviews share exactly the same coordinates and hit testing as DOM cards.
+viewport.addEventListener('click',e=>{
+  if(zoom>=CANVAS_ZOOM||e.target.closest('.map-minimap')||performance.now()<suppressMapClickUntil)return;
+  const rect=viewport.getBoundingClientRect(),point={x:e.clientX-rect.left-viewport.clientLeft,y:e.clientY-rect.top-viewport.clientTop};
+  const x=(point.x-camera.x)/zoom,y=(point.y-camera.y)/zoom;
+  if(zoom<.07 && matchedWords.length) {
+    // Individual words can be smaller than a pixel here; choose the nearest fixed cell.
+    const targetX=Math.max(0,Math.min(worldWidth,x)),targetY=Math.max(0,Math.min(worldHeight,y));
+    let nearest=matchedWords[0],distance=Infinity;
+    for(const candidate of matchedWords) {
+      const p=positionOf(candidate),d=(p.x+mapLayout.width/2-targetX)**2+(p.y+mapLayout.height/2-targetY)**2;
+      if(d<distance){nearest=candidate;distance=d;}
+    }
+    zoom=.7;applyZoom();centerWord(nearest);persist();return;
+  }
+  const col=Math.floor((x-mapLayout.padding)/(mapLayout.width+mapLayout.gap));
+  const row=Math.floor((y-mapLayout.padding)/(mapLayout.height+mapLayout.gap));
+  const word=col>=0&&col<mapLayout.columns&&row>=0?wordBySlot.get(row*mapLayout.columns+col):null;
+  if(word&&matchedSlots.has(word.slot)) {
+    const p=positionOf(word);
+    if(x<=p.x+mapLayout.width&&y<=p.y+mapLayout.height) {
+      if(zoom<.07){zoom=.7;applyZoom();centerWord(word);persist();}else openDetail(word.id);
+      return;
+    }
+  }
+  setZoom(zoom*2,point);
+});
+const minimap=$('#map-minimap');
+function locateFromMinimap(e) {
+  const rect=minimap.getBoundingClientRect();
+  const x=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width))*worldWidth;
+  const y=Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height))*worldHeight;
+  zoom=Math.max(.4,zoom);camera.x=viewport.clientWidth/2-x*zoom;camera.y=viewport.clientHeight/2-y*zoom;
+  applyZoom();saveViewSoon();
+}
+minimap.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();minimap.setPointerCapture(e.pointerId);locateFromMinimap(e);});
+minimap.addEventListener('pointermove',e=>{if(minimap.hasPointerCapture(e.pointerId))locateFromMinimap(e);});
+minimap.addEventListener('pointerup',e=>{if(minimap.hasPointerCapture(e.pointerId))minimap.releasePointerCapture(e.pointerId);persist();});
+minimap.addEventListener('keydown',e=>{
+  if(!['ArrowUp','ArrowDown','Home','End'].includes(e.key))return;
+  e.preventDefault();zoom=Math.max(.4,zoom);
+  if(e.key==='Home')camera.y=0;else if(e.key==='End')camera.y=viewport.clientHeight-worldHeight*zoom;
+  else camera.y+=(e.key==='ArrowUp'?1:-1)*worldHeight*zoom*.01;
+  applyZoom();persist();
+});
 // Pointer gestures keep word positions fixed; only the camera moves.
 const pointers = new Map();
 let drag = null, pinch = null;
 function pinchMetrics() {
   const [a,b] = [...pointers.values()];
   const rect = viewport.getBoundingClientRect();
-  return {distance:Math.hypot(a.x-b.x,a.y-b.y), x:(a.x+b.x)/2-rect.left, y:(a.y+b.y)/2-rect.top};
+  return {distance:Math.hypot(a.x-b.x,a.y-b.y),x:(a.x+b.x)/2-rect.left-viewport.clientLeft,y:(a.y+b.y)/2-rect.top-viewport.clientTop};
 }
 viewport.addEventListener('pointerdown', e => {
-  if (e.button !== 0) return;
+  if(e.button!==0||e.target.closest('.map-minimap'))return;
   pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
   if (pointers.size === 1) drag = {id:e.pointerId,x:e.clientX,y:e.clientY,panX:camera.x,panY:camera.y,moved:false};
   if (pointers.size === 2) {
@@ -307,7 +470,7 @@ viewport.addEventListener('pointermove', e => {
   pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
   if (pinch && pointers.size >= 2) {
     const metric = pinchMetrics();
-    zoom = Math.max(.1,Math.min(1.5,pinch.zoom*metric.distance/pinch.distance));
+    zoom=Math.max(minimumZoom(),Math.min(MAX_ZOOM,pinch.zoom*metric.distance/pinch.distance));
     camera.x = metric.x-pinch.worldX*zoom; camera.y = metric.y-pinch.worldY*zoom;
     applyZoom(); suppressMapClickUntil = performance.now()+500;
   } else if (drag && drag.id === e.pointerId) {
@@ -335,7 +498,10 @@ window.addEventListener('pointercancel', endMapPointer);
 viewport.addEventListener('keydown', e => {
   if (e.target !== viewport) return;
   const directions = {ArrowLeft:[90,0],ArrowRight:[-90,0],ArrowUp:[0,90],ArrowDown:[0,-90]};
-  if (directions[e.key]) {e.preventDefault(); camera.x+=directions[e.key][0]; camera.y+=directions[e.key][1]; paintCamera(); persist();}
+  if(directions[e.key]){e.preventDefault();camera.x+=directions[e.key][0];camera.y+=directions[e.key][1];paintCamera();persist();}
+  if(e.key==='Home'||e.key==='End'){e.preventDefault();camera.y=e.key==='Home'?0:viewport.clientHeight-worldHeight*zoom;paintCamera();persist();}
+  if(e.key==='+'||e.key==='='){e.preventDefault();setZoom(zoom*1.35);}
+  if(e.key==='-'){e.preventDefault();setZoom(zoom/1.35);}
 });
 // Keyboard focus can reach a word outside the camera: bring that fixed cell into view.
 viewport.addEventListener('focusin', e => {
@@ -348,7 +514,7 @@ viewport.addEventListener('focusin', e => {
   else if (top+mapLayout.height*zoom>viewport.clientHeight) camera.y-=top+mapLayout.height*zoom-viewport.clientHeight;
   paintCamera();
 });
-new ResizeObserver(() => {paintCamera();}).observe(viewport);
+new ResizeObserver(()=>{applyZoom();}).observe(viewport);
 $('#add-category').innerHTML = themes.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
 $('#add-word').addEventListener('click', () => {if (category !== 'all') $('#add-category').value = category; $('#add-dialog').showModal();});
 document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => document.getElementById(b.dataset.close).close()));
@@ -358,7 +524,7 @@ $('#word-form').addEventListener('submit', e => {
   if (!data.word || !data.meaning) {toast('请填写单词和中文释义'); return;}
   if (words.some(w => w.word.toLowerCase() === data.word.toLowerCase())) {toast('这颗单词种子已经在花园里了'); return;}
   const w={...data,id:`custom-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,level:'custom',slot:Math.max(...words.map(w=>w.slot))+1};
-  custom.push(w);words.push(w);wordById.set(w.id,w); category=filter=studyLevel='all';query='';$('#search').value='';activeRegion=Math.floor(w.slot/REGION_SIZE);render();centerWord(w);persist();e.target.reset();$('#add-dialog').close();toast(`「${w.word}」已经种进你的花园`);
+  custom.push(w);words.push(w);wordById.set(w.id,w);wordBySlot.set(w.slot,w);category=filter=studyLevel='all';query='';$('#search').value='';render();zoom=Math.max(.7,zoom);applyZoom();centerWord(w);persist();e.target.reset();$('#add-dialog').close();toast(`「${w.word}」已经种进你的花园`);
 });
 function startReview() {
   reviewQueue = words.filter(w => !known.has(w.id) && (category==='all'||w.category===category) && (studyLevel==='all'||w.level===studyLevel));
@@ -376,4 +542,5 @@ $('#scope-review').addEventListener('click', startReview);
 $('#start-review').addEventListener('click', startReview); $('#review-nav').addEventListener('click', startReview);
 $('#review-dialog').addEventListener('close', () => { if ('speechSynthesis' in window) speechSynthesis.cancel(); });
 document.addEventListener('keydown', e => {if(e.key === '/' && !['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName) && !document.querySelector('dialog[open]')) { e.preventDefault(); $('#search').focus(); }});
+window.addEventListener('pagehide',persist);
 updateStorageNote(); render(); applyZoom();
